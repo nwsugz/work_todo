@@ -1,0 +1,71 @@
+"""업무 한 건을 표현하는 데이터 모델."""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+TODO = "TODO"
+TBD = "TBD"
+COLUMNS = (TODO, TBD)
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+@dataclass
+class Task:
+    title: str
+    note: str = ""
+    due: str | None = None            # "YYYY-MM-DD" 또는 None
+    tags: list[str] = field(default_factory=list)
+    column: str = TODO                # 현재 놓여 있는 칸
+    category: str | None = None       # 설정에서 지정한 카테고리(우선순위 정렬에 사용)
+    pinned: bool = False              # True면 규칙 자동 분류에서 제외
+    matched_rule: str | None = None    # 마지막으로 적용된 규칙 이름
+    checked: bool = False             # 체크박스 표시(취소선). 목록 위치·숨김에는 영향 없음
+    done: bool = False
+    order: int = 0
+    id: str = field(default_factory=_new_id)
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "note": self.note,
+            "due": self.due,
+            "tags": list(self.tags),
+            "column": self.column,
+            "category": self.category,
+            "pinned": self.pinned,
+            "matched_rule": self.matched_rule,
+            "checked": self.checked,
+            "done": self.done,
+            "order": self.order,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Task":
+        column = data.get("column", TODO)
+        if column not in COLUMNS:
+            column = TODO
+        return cls(
+            title=str(data.get("title", "")).strip() or "(제목 없음)",
+            note=str(data.get("note", "")),
+            due=data.get("due") or None,
+            tags=[str(t) for t in data.get("tags", []) if str(t).strip()],
+            column=column,
+            category=(str(data["category"]) if data.get("category") else None),
+            pinned=bool(data.get("pinned", False)),
+            matched_rule=data.get("matched_rule"),
+            checked=bool(data.get("checked", False)),
+            done=bool(data.get("done", False)),
+            order=int(data.get("order", 0)),
+            id=str(data.get("id") or _new_id()),
+            created_at=str(data.get("created_at") or datetime.now().isoformat(timespec="seconds")),
+        )

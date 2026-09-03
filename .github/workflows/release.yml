@@ -1,0 +1,40 @@
+name: Windows 실행 파일 빌드
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: 실행 파일 빌드
+        run: pyinstaller --noconfirm --clean --name TodoTBD --windowed --onefile main.py
+
+      - name: 아티팩트 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: TodoTBD-windows
+          path: dist/TodoTBD.exe
+
+      - name: 릴리스에 첨부
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/TodoTBD.exe
+          generate_release_notes: true
