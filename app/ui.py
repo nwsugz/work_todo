@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QInputDialog,
@@ -659,7 +660,23 @@ class SettingsDialog(QDialog):
         theme_row.addStretch(1)
 
         category_label = QLabel("카테고리 우선순위")
+
+        # 목록과 추가/삭제 버튼을 하나의 테두리 안에 함께 담습니다. 목록 자체는 이 테두리
+        # 안에서는 테두리가 없는 상태로 두고, 바깥 프레임에만 테두리를 그립니다.
+        category_frame = QFrame()
+        category_frame.setObjectName("categoryFrame")
+        category_frame.setStyleSheet(
+            f"QFrame#categoryFrame {{ border: 1px solid {BORDER}; border-radius: 8px; background: transparent; }}"
+        )
+        category_frame_layout = QVBoxLayout(category_frame)
+        category_frame_layout.setContentsMargins(8, 8, 8, 8)
+        category_frame_layout.setSpacing(6)
+
         self.category_list = QListWidget()
+        self.category_list.setStyleSheet(
+            "QListWidget { border: none; background: transparent; padding: 0px; }"
+        )
+        self.category_list.setFrameShape(QFrame.Shape.NoFrame)
         self.category_list.addItems(self.window.settings.get("categories", []))
         self.category_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.category_list.model().rowsMoved.connect(lambda *_: self._sync())
@@ -674,13 +691,17 @@ class SettingsDialog(QDialog):
         category_buttons.addWidget(remove_button)
         category_buttons.addStretch(1)
 
+        category_frame_layout.addWidget(self.category_list)
+        category_frame_layout.addLayout(category_buttons)
+
+        self._update_category_list_height()
+
         layout = QVBoxLayout(self)
         layout.addWidget(theme_label)
         layout.addLayout(theme_row)
         layout.addSpacing(10)
         layout.addWidget(category_label)
-        layout.addWidget(self.category_list)
-        layout.addLayout(category_buttons)
+        layout.addWidget(category_frame)
 
     def _set_theme(self, name: str) -> None:
         self.light_button.setChecked(name == "light")
@@ -690,18 +711,31 @@ class SettingsDialog(QDialog):
     def _category_names(self) -> list[str]:
         return [self.category_list.item(i).text() for i in range(self.category_list.count())]
 
+    def _update_category_list_height(self) -> None:
+        """목록 테두리가 처음부터 크게 잡히지 않도록, 실제 항목 수에 맞춰 높이를 계산합니다.
+        항목이 늘어나면 그만큼 늘어나고, 너무 많아지면(6개 초과) 그 이상은 스크롤로 봅니다."""
+        count = self.category_list.count()
+        row_height = self.category_list.sizeHintForRow(0)
+        if row_height <= 0:
+            row_height = self.category_list.fontMetrics().height() + 10
+        max_visible = 6
+        visible_rows = min(max(count, 1), max_visible)
+        self.category_list.setFixedHeight(row_height * visible_rows + 8)
+
     def _add_category(self) -> None:
         name, ok = QInputDialog.getText(self, "카테고리 추가", "이름")
         name = name.strip()
         if not ok or not name or name in self._category_names():
             return
         self.category_list.addItem(name)
+        self._update_category_list_height()
         self._sync()
 
     def _remove_category(self) -> None:
         row = self.category_list.currentRow()
         if row >= 0:
             self.category_list.takeItem(row)
+            self._update_category_list_height()
             self._sync()
 
     def _sync(self) -> None:
@@ -943,7 +977,9 @@ class CalendarMonthView(QWidget):
             for column, day in enumerate(week):
                 in_month = day.month == self.current_month
                 cell = QWidget()
-                cell.setStyleSheet(f"background: {CANVAS}; border: 1px solid {BORDER};")
+                cell.setStyleSheet(
+                    f"background: {CANVAS}; border-right: 1px solid {BORDER}; border-bottom: 1px solid {BORDER};"
+                )
                 cell_layout = QVBoxLayout(cell)
                 cell_layout.setContentsMargins(6, 4, 0, 0)
                 cell_layout.setSpacing(0)
