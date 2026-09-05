@@ -980,7 +980,7 @@ class CalendarMonthView(QWidget):
             for column, day in enumerate(week):
                 in_month = day.month == self.current_month
                 cell = QWidget()
-                cell.setStyleSheet(f"background: {CANVAS}; border-bottom: 1px solid {BORDER};")
+                cell.setStyleSheet(f"background: {CANVAS};")
                 cell_layout = QVBoxLayout(cell)
                 cell_layout.setContentsMargins(6, 4, 0, 0)
                 cell_layout.setSpacing(0)
@@ -1039,7 +1039,18 @@ class CalendarMonthView(QWidget):
                 bar.raise_()
                 self._day_cells.append(bar)
 
-            row_cursor += 1 + lanes_used
+            # 주 사이 구분선은 날짜 칸(cell) 자체의 테두리로 그리지 않고, 이렇게 별도의 얇은
+            # 위젯으로 그립니다. cell에 border-bottom을 직접 주면 Qt/Fusion 스타일에서 그
+            # 안의 자식 위젯(날짜 숫자) 바로 밑에도 테두리가 겹쳐 그려지는 버그가 있었습니다.
+            divider_row = row_cursor + 1 + lanes_used
+            self.grid.setRowMinimumHeight(divider_row, 1)
+            divider = QWidget()
+            divider.setFixedHeight(1)
+            divider.setStyleSheet(f"background: {BORDER};")
+            self.grid.addWidget(divider, divider_row, 0, 1, len(WEEKDAY_LABELS))
+            self._day_cells.append(divider)
+
+            row_cursor = divider_row + 1
 
         self.monthRendered.emit()
 
