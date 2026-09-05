@@ -1080,7 +1080,10 @@ class HistoryDialog(QDialog):
     """기간을 고르면 그 사이에 완료 처리한 업무를 쭉 보여줍니다."""
 
     def __init__(self, window: "MainWindow") -> None:
-        super().__init__(window)
+        # 부모를 안 넘깁니다 — 부모로 넘기면 TODO 창을 '항상 위'로 고정했을 때 Windows가
+        # 이 창(소유된 창)도 다른 모든 앱 위에 뜨는 걸로 취급해서, 완료 이력 창까지 같이
+        # 최상단 고정되어 버렸습니다. TODO 창의 고정 여부와 완전히 분리하기 위함입니다.
+        super().__init__(None)
         self.window = window
         self.setWindowTitle("완료 이력")
         self.setMinimumSize(640, 500)
