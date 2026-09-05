@@ -357,7 +357,7 @@ class ColumnList(QListWidget):
 
     taskDropped = Signal(str, str, int, bool)  # 업무 id, 대상 칸, 위치, 칸이 바뀌었는지
     taskCheckToggled = Signal(str)  # 업무 id — 체크 표시만 바꿈 (자리 유지)
-    taskCompleteRequested = Signal(str)  # 업무 id — 완료 처리(칸 아래로/숨김)
+    taskDeleteRequested = Signal(str)  # 업무 id — Backspace/Delete로 삭제 요청
     taskCollapseToggled = Signal(str)  # 업무 id — 하위 업무 접기/펼치기
     taskNestRequested = Signal(str, str)  # 업무 id, 대상 업무 id — 카드 위에 떨어뜨려 하위로 넣기
 
@@ -482,7 +482,7 @@ class ColumnList(QListWidget):
         if event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
             item = self.currentItem()
             if item is not None:
-                self.taskCompleteRequested.emit(item.data(ROLE_TASK_ID))
+                self.taskDeleteRequested.emit(item.data(ROLE_TASK_ID))
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -977,9 +977,7 @@ class CalendarMonthView(QWidget):
             for column, day in enumerate(week):
                 in_month = day.month == self.current_month
                 cell = QWidget()
-                cell.setStyleSheet(
-                    f"background: {CANVAS}; border-right: 1px solid {BORDER}; border-bottom: 1px solid {BORDER};"
-                )
+                cell.setStyleSheet(f"background: {CANVAS}; border-bottom: 1px solid {BORDER};")
                 cell_layout = QVBoxLayout(cell)
                 cell_layout.setContentsMargins(6, 4, 0, 0)
                 cell_layout.setSpacing(0)
@@ -1292,7 +1290,7 @@ class MainWindow(QMainWindow):
         listing = ColumnList(column)
         listing.taskDropped.connect(self.on_task_dropped)
         listing.taskCheckToggled.connect(self.on_task_check_toggled)
-        listing.taskCompleteRequested.connect(self.on_task_complete_requested)
+        listing.taskDeleteRequested.connect(self.on_task_delete_requested)
         listing.taskCollapseToggled.connect(self.on_task_collapse_toggled)
         listing.taskNestRequested.connect(self.on_task_nest_requested)
         listing.customContextMenuRequested.connect(
@@ -1688,11 +1686,11 @@ class MainWindow(QMainWindow):
             return
         self.set_done(task, not task.done)
 
-    def on_task_complete_requested(self, task_id: str) -> None:
+    def on_task_delete_requested(self, task_id: str) -> None:
         task = self.find(task_id)
-        if task is None or task.done:
+        if task is None:
             return
-        self.set_done(task, True)
+        self.delete_task(task)
 
     def reapply_rules(self) -> None:
         self.rules, _ = storage.load_rules()
