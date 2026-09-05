@@ -574,7 +574,9 @@ class TaskDialog(QDialog):
         task: Task | None = None,
         categories: list[str] | None = None,
     ) -> None:
-        super().__init__(parent)
+        # 부모(parent)를 넘기지 않습니다 — TODO 창의 '항상 위' 고정 여부가 이 창까지
+        # 따라오지 않게 하기 위함입니다(HistoryDialog와 동일한 이유).
+        super().__init__(None)
         self.setWindowTitle("업무 편집" if task else "새 업무")
         self.setMinimumWidth(400)
         categories = categories or []
@@ -659,7 +661,9 @@ class SettingsDialog(QDialog):
     """카테고리 우선순위(위쪽일수록 우선) 설정. 목록을 드래그해서 순서를 바꿉니다."""
 
     def __init__(self, window: "MainWindow") -> None:
-        super().__init__(window)
+        # 부모를 넘기지 않습니다 — TODO 창의 '항상 위' 고정 여부가 이 창까지
+        # 따라오지 않게 하기 위함입니다(HistoryDialog와 동일한 이유).
+        super().__init__(None)
         self.window = window
         self.setWindowTitle("설정")
         self.setMinimumWidth(360)
@@ -1654,16 +1658,39 @@ class MainWindow(QMainWindow):
         self.settings["tbd_collapsed"] = collapsed
         storage.save_settings(self.settings)
 
-    def toggle_always_on_top(self, checked: bool) -> None:
-        was_visible = self.isVisible()
-        flags = self.windowFlags()
-        if checked:
-            flags |= Qt.WindowType.WindowStaysOnTopHint
+    def _set_always_on_top(self, checked: bool) -> None:
+        """창이 이미 떠 있는 상태에서 '항상 위'를 끄고 켭니다.
+        setWindowFlags()로 하면 네이티브 창을 통째로 다시 만들어야 해서 화면이 깜빡이고,
+        Windows에서는 끌 때 실제로는 최상단 고정이 안 풀리는 경우가 있었습니다. 대신
+        Windows API(SetWindowPos)를 직접 불러서 창을 다시 만들지 않고 바로 반영합니다."""
+        if sys.platform == "win32":
+            import ctypes
+
+            HWND_TOPMOST = -1
+            HWND_NOTOPMOST = -2
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOACTIVATE = 0x0010
+            hwnd = int(self.winId())
+            ctypes.windll.user32.SetWindowPos(
+                hwnd,
+                HWND_TOPMOST if checked else HWND_NOTOPMOST,
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
         else:
-            flags &= ~Qt.WindowType.WindowStaysOnTopHint
-        self.setWindowFlags(flags)
-        if was_visible:
-            self.show()
+            was_visible = self.isVisible()
+            flags = self.windowFlags()
+            if checked:
+                flags |= Qt.WindowType.WindowStaysOnTopHint
+            else:
+                flags &= ~Qt.WindowType.WindowStaysOnTopHint
+            self.setWindowFlags(flags)
+            if was_visible:
+                self.show()
+
+    def toggle_always_on_top(self, checked: bool) -> None:
+        self._set_always_on_top(checked)
         self.settings["always_on_top"] = checked
         storage.save_settings(self.settings)
 
