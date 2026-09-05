@@ -289,6 +289,10 @@ class CardDelegate(QStyledItemDelegate):
         meta_h = meta_metrics.boundingRect(QRect(0, 0, text_width, 4000), WRAP_FLAGS, card.get("meta", "")).height()
 
         content_h = CARD_TOP_PAD + title_h + TITLE_META_GAP + meta_h + CARD_BOTTOM_PAD
+        note = card.get("note", "")
+        if note:
+            note_h = meta_metrics.boundingRect(QRect(0, 0, text_width, 4000), WRAP_FLAGS, note).height()
+            content_h += TITLE_META_GAP + note_h
         # 바깥쪽에 남겨둔 4+3/-4-3 여백(paint에서 rect를 깎아내는 만큼)을 다시 더해 줍니다.
         return QSize(option.rect.width(), max(CARD_MIN_HEIGHT, content_h) + 6)
 
@@ -353,7 +357,15 @@ class CardDelegate(QStyledItemDelegate):
         painter.setFont(ui_font(META_FONT_SIZE))
         painter.setPen(QColor(MUTED))
         meta_rect = QRect(text_left, title_rect.bottom() + TITLE_META_GAP, text_width, 4000)
+        meta_rect = painter.boundingRect(meta_rect, WRAP_FLAGS, card.get("meta", ""))
         painter.drawText(meta_rect, WRAP_FLAGS, card.get("meta", ""))
+
+        note = card.get("note", "")
+        if note:
+            painter.setFont(ui_font(META_FONT_SIZE))
+            painter.setPen(QColor(MUTED))
+            note_rect = QRect(text_left, meta_rect.bottom() + TITLE_META_GAP, text_width, 4000)
+            painter.drawText(note_rect, WRAP_FLAGS, note)
         painter.restore()
 
 
@@ -605,11 +617,8 @@ class TaskDialog(QDialog):
         due_row.addWidget(self.due_edit, 1)
         due_row.addWidget(self.no_due)
 
-        self.tags_edit = QLineEdit(", ".join(task.tags) if task else "")
-        self.tags_edit.setPlaceholderText("쉼표로 구분 (예: 대기, 보고)")
-
         self.note_edit = QPlainTextEdit(task.note if task else "")
-        self.note_edit.setPlaceholderText("메모. 규칙의 단어 조건은 메모도 함께 봅니다.")
+        self.note_edit.setPlaceholderText("메모")
         self.note_edit.setFixedHeight(90)
 
         form = QFormLayout()
@@ -617,7 +626,6 @@ class TaskDialog(QDialog):
         form.addRow("카테고리", self.category_combo)
         form.addRow("시작일", self.start_edit)
         form.addRow("마감일", due_row)
-        form.addRow("태그", self.tags_edit)
         form.addRow("메모", self.note_edit)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -638,13 +646,11 @@ class TaskDialog(QDialog):
         super().accept()
 
     def values(self) -> dict:
-        tags = [t.strip() for t in self.tags_edit.text().split(",") if t.strip()]
         return {
             "title": self.title_edit.text().strip(),
             "category": self.category_combo.currentData(),
             "start": self.start_edit.date().toString("yyyy-MM-dd"),
             "due": None if self.no_due.isChecked() else self.due_edit.date().toString("yyyy-MM-dd"),
-            "tags": tags,
             "note": self.note_edit.toPlainText().strip(),
         }
 
@@ -1423,8 +1429,6 @@ class MainWindow(QMainWindow):
         if task.category:
             parts.append(f"[{task.category}]")
         parts.append(due_caption(task))
-        if task.tags:
-            parts.append(" ".join(f"#{t}" for t in task.tags))
         children = [t for t in self.tasks if t.parent_id == task.id and not t.archived]
         if children:
             # 체크박스만 눌러도(완료 처리까지는 안 갔어도) "다 했다"는 뜻으로 보고 숫자에 반영합니다.
@@ -1433,6 +1437,7 @@ class MainWindow(QMainWindow):
         return {
             "title": task.title,
             "meta": "  ·  ".join(parts),
+            "note": task.note.strip(),
             "pinned": task.pinned,
             "checked": task.checked,
             "done": task.done,

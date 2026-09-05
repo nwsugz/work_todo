@@ -4,8 +4,7 @@
 한 규칙 안의 조건들은 모두 만족해야 합니다(AND).
 
 지원하는 조건
-  title_contains   : 제목 또는 메모에 이 단어들 중 하나가 있으면 참
-  tag_any          : 태그 중 하나라도 일치하면 참
+  title_contains   : 제목에 이 단어들 중 하나가 있으면 참
   has_due          : true/false — 마감일 유무
   due_within_days  : 정수 — 마감일이 오늘부터 N일 이내면 참(지난 것도 포함)
   overdue          : true/false — 마감일이 오늘보다 지났는지
@@ -28,11 +27,6 @@ DEFAULT_RULES: dict[str, Any] = {
             "then": TBD,
         },
         {
-            "name": "누군가의 회신을 기다리면 TBD",
-            "when": {"tag_any": ["대기", "waiting", "blocked"]},
-            "then": TBD,
-        },
-        {
             "name": "마감일이 14일 이내면 TODO",
             "when": {"due_within_days": 14},
             "then": TODO,
@@ -47,7 +41,7 @@ DEFAULT_RULES: dict[str, Any] = {
 
 
 def _haystack(task: Task) -> str:
-    return f"{task.title}\n{task.note}".lower()
+    return task.title.lower()
 
 
 def _parse_due(value: str | None) -> date | None:
@@ -65,10 +59,6 @@ def _condition_holds(key: str, expected: Any, task: Task, today: date) -> bool:
     if key == "title_contains":
         text = _haystack(task)
         return any(str(word).lower() in text for word in expected or [])
-
-    if key == "tag_any":
-        tags = {t.lower() for t in task.tags}
-        return any(str(t).lower() in tags for t in expected or [])
 
     if key == "has_due":
         return (due is not None) == bool(expected)

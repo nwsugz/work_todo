@@ -22,7 +22,6 @@ class Task:
     note: str = ""
     start: str | None = None          # "YYYY-MM-DD". 새 업무를 만들 당시 날짜가 기본값
     due: str | None = None            # "YYYY-MM-DD" 또는 None
-    tags: list[str] = field(default_factory=list)
     column: str = TODO                # 현재 놓여 있는 칸
     category: str | None = None       # 설정에서 지정한 카테고리(우선순위 정렬에 사용)
     pinned: bool = False              # True면 규칙 자동 분류에서 제외
@@ -44,7 +43,6 @@ class Task:
             "note": self.note,
             "start": self.start,
             "due": self.due,
-            "tags": list(self.tags),
             "column": self.column,
             "category": self.category,
             "pinned": self.pinned,
@@ -69,7 +67,6 @@ class Task:
             note=str(data.get("note", "")),
             start=data.get("start") or None,
             due=data.get("due") or None,
-            tags=[str(t) for t in data.get("tags", []) if str(t).strip()],
             column=column,
             category=(str(data["category"]) if data.get("category") else None),
             pinned=bool(data.get("pinned", False)),
