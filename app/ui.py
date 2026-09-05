@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar as calendar_module
+import copy
 import sys
 from datetime import date, datetime
 
@@ -55,6 +56,7 @@ from .models import COLUMNS, TBD, TODO, Task
 from .rules import apply_rules, classify
 
 URGENT_DAYS = 3  # 마감일까지 이 안이면 '임박'으로 표시
+UNDO_STACK_LIMIT = 50  # Ctrl+Z로 되돌릴 수 있는 최대 단계 수
 
 # 노션풍 라이트/다크 팔레트. CardDelegate 등에서는 아래 이름들을 그냥 모듈 전역 변수처럼
 # 씁니다(예: QColor(SURFACE)) — apply_theme()이 이 이름들 자체를 다시 바인딩해서 테마를
@@ -1221,6 +1223,7 @@ class MainWindow(QMainWindow):
         self.column_wrappers: dict[str, QWidget] = {}
         self.column_name_labels: dict[str, QLabel] = {}
         self._tbd_expanded_width = 300  # 접었다 펼 때 되돌아갈 폭. 접기 직전 실제 폭으로 매번 갱신됩니다.
+        self._undo_stack: list[list[Task]] = []  # Ctrl+Z. 내용이 실제로 바뀌기 직전 상태의 스냅샷들
 
         self._build_ui()
         self._restore_settings()
@@ -1280,9 +1283,13 @@ class MainWindow(QMainWindow):
         pin_action = QAction(self)
         pin_action.setShortcut(QKeySequence("Ctrl+T"))
         pin_action.triggered.connect(self.pin_toggle.toggle)
+        undo_action = QAction(self)
+        undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        undo_action.triggered.connect(self.undo)
         self.addAction(new_action)
         self.addAction(refresh_action)
         self.addAction(pin_action)
+        self.addAction(undo_action)
 
     def _restore_settings(self) -> None:
         with QSignalBlocker(self.done_toggle):
@@ -1499,14 +1506,17 @@ class MainWindow(QMainWindow):
         한 번 하위로 들어간 업무는 같은 칸 안에서 순서만 바꿔도 계속 하위에 갇혀 있었습니다."""
         flat = [t for t in self.visible_tasks(column) if t.id != task_id]
         row = max(0, min(row, len(flat)))
-        if row == 0:
+        # 맨 위, 또는 목록 전체의 맨 끝에 놓으면 항상 최상위로 취급합니다. 맨 끝의 경우를
+        # 따로 안 두면, 마지막 카드가 어떤 프로젝트의 하위 업무일 때 그 하위로 도로
+        # 붙잡혀 버려서(한 번 하위로 들어간 카드를 맨 아래로 다시 빼낼 방법이 없어짐).
+        if row == 0 or row == len(flat):
             return None
         anchor = flat[row - 1]
         if anchor.parent_id is not None:
             return anchor.parent_id
         # anchor가 최상위 업무인 경우: 바로 다음 카드가 그 하위 업무라면(부모와 첫 하위
         # 업무 사이에 끼워 넣는 상황) 최상위로 튀어나오지 않고 그 하위로 들어가게 합니다.
-        if row < len(flat) and flat[row].parent_id == anchor.id:
+        if flat[row].parent_id == anchor.id:
             return anchor.id
         return None
 
@@ -1514,6 +1524,7 @@ class MainWindow(QMainWindow):
         task = self.find(task_id)
         if task is None:
             return
+        self._push_undo()
         if moved_across:
             task.column = column
             task.pinned = True
@@ -1535,6 +1546,7 @@ class MainWindow(QMainWindow):
             return  # 하위 업무 아래에 또 하위 업무를 넣지는 않습니다 (한 단계까지만)
         if self.has_children(task.id):
             return  # 이미 하위 업무를 가진 업무는 다른 업무의 하위로 넣지 않습니다
+        self._push_undo()
         task.parent_id = target.id
         task.pinned = True
         task.column = target.column
@@ -1557,6 +1569,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         values = dialog.values()
+        self._push_undo()
         task = Task(**values)
         task.column, task.matched_rule = classify(task, self.rules)
         task.order = len(self.top_level_tasks(task.column))
@@ -1569,6 +1582,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         values = dialog.values()
+        self._push_undo()
         task = Task(**values)
         task.parent_id = parent.id
         task.pinned = True
@@ -1592,6 +1606,7 @@ class MainWindow(QMainWindow):
         dialog = TaskDialog(self, task, categories=self.settings.get("categories", []))
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        self._push_undo()
         for key, value in dialog.values().items():
             setattr(task, key, value)
         if not task.pinned:
@@ -1600,6 +1615,7 @@ class MainWindow(QMainWindow):
         self.render()
 
     def unpin(self, task: Task) -> None:
+        self._push_undo()
         task.pinned = False
         task.parent_id = None  # 하위 업무는 항상 고정 상태이므로, 고정을 풀면 상위에서도 떼어냅니다
         task.column, task.matched_rule = classify(task, self.rules)
@@ -1727,6 +1743,7 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(self, "목록에서 빼기", message)
             if answer != QMessageBox.StandardButton.Yes:
                 return
+            self._push_undo()
             task.archived = True
             for child in children:
                 child.archived = True
@@ -1744,6 +1761,7 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.question(self, "삭제", message)
         if answer != QMessageBox.StandardButton.Yes:
             return
+        self._push_undo()
         remove_ids = {task.id} | {t.id for t in children}
         self.tasks = [t for t in self.tasks if t.id not in remove_ids]
         self.persist()
@@ -1772,11 +1790,13 @@ class MainWindow(QMainWindow):
         menu.exec(listing.mapToGlobal(pos))
 
     def pin(self, task: Task) -> None:
+        self._push_undo()
         task.pinned = True
         self.persist()
         self.render()
 
     def set_done(self, task: Task, done: bool) -> None:
+        self._push_undo()
         task.done = done
         task.done_at = datetime.now().isoformat(timespec="seconds") if done else None
         if not done:
@@ -1850,6 +1870,20 @@ class MainWindow(QMainWindow):
 
     def persist(self) -> None:
         storage.save_tasks(self.tasks)
+
+    def _push_undo(self) -> None:
+        """내용을 실제로 바꾸기 직전, 지금 상태를 스냅샷으로 남깁니다. Ctrl+Z를 누르면
+        가장 최근 스냅샷으로 되돌아갑니다."""
+        self._undo_stack.append(copy.deepcopy(self.tasks))
+        if len(self._undo_stack) > UNDO_STACK_LIMIT:
+            self._undo_stack.pop(0)
+
+    def undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self.tasks = self._undo_stack.pop()
+        self.persist()
+        self.render()
 
     def closeEvent(self, event) -> None:
         self.persist()
