@@ -939,7 +939,11 @@ class CalendarMonthView(QWidget):
                 except ValueError:
                     start = end
             if start > end:
-                start, end = end, start
+                # 시작일이 마감일보다 뒤인 경우(오타 등으로 앞뒤가 크게 어긋난 경우 포함)는
+                # 서로 맞바꾸지 않습니다 — 예전에는 맞바꿨는데, 연도를 잘못 입력한 경우처럼
+                # 차이가 크면 막대가 몇 달씩 이어지는 것처럼 보이는 문제가 있었습니다. 대신
+                # 시작일을 마감일과 같은 걸로 보고 하루짜리 막대로 그립니다.
+                start = end
             spans.append((task, start, end, task.done))
         return spans
 
