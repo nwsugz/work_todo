@@ -95,8 +95,8 @@ THEMES: dict[str, dict[str, str]] = {
         "URGENT_OVERDUE_BG": "#FBEAEA",
         "URGENT_SOON": "#D9730D",
         "URGENT_SOON_BG": "#FBF0E4",
-        "PRIMARY_BG": "#C9791A",
-        "PRIMARY_TEXT": "#FFFFFF",
+        "PRIMARY_BG": "#D9A441",
+        "PRIMARY_TEXT": "#191919",
     },
 }
 
