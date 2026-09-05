@@ -1800,8 +1800,20 @@ class MainWindow(QMainWindow):
         self.render()
 
     def open_history(self) -> None:
-        dialog = HistoryDialog(self)
-        dialog.exec()
+        # 완료 이력 창은 비모달로 띄웁니다 — TODO 테이블을 계속 조작할 수 있어야 하기
+        # 때문입니다(다른 다이얼로그와 달리 이 창만 동시 조작 가능하게 해달라는 요청).
+        existing = getattr(self, "_history_dialog", None)
+        if existing is not None:
+            try:
+                if existing.isVisible():
+                    existing.raise_()
+                    existing.activateWindow()
+                    return
+            except RuntimeError:
+                pass  # 이미 닫혀서(WA_DeleteOnClose) C++ 쪽 객체가 사라진 경우
+        self._history_dialog = HistoryDialog(self)
+        self._history_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._history_dialog.show()
 
     def apply_theme(self, name: str) -> None:
         apply_theme(name)
