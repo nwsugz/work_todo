@@ -980,7 +980,7 @@ class CalendarMonthView(QWidget):
             for column, day in enumerate(week):
                 in_month = day.month == self.current_month
                 cell = QWidget()
-                cell.setStyleSheet(f"background: {CANVAS}; border-bottom: 1px solid {BORDER};")
+                cell.setStyleSheet(f"background: {CANVAS};")
                 cell_layout = QVBoxLayout(cell)
                 cell_layout.setContentsMargins(6, 4, 0, 0)
                 cell_layout.setSpacing(0)
