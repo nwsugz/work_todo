@@ -1822,6 +1822,17 @@ class MainWindow(QMainWindow):
         self.column_name_labels[TBD].setStyleSheet(f"color: {column_accent(TBD)};")
         self.settings["theme"] = CURRENT_THEME
         storage.save_settings(self.settings)
+
+        # 완료 이력 창의 달력은 날짜 칸 색을 앱 스타일시트가 아니라 위젯마다 직접
+        # setStyleSheet()으로 구워 두기 때문에, 테마가 바뀌어도 이미 그려진 칸은
+        # 저절로 안 바뀝니다. 열려 있으면 다시 그려서 새 테마 색을 반영합니다.
+        history = getattr(self, "_history_dialog", None)
+        if history is not None:
+            try:
+                if history.isVisible():
+                    history.calendar_view._render_month()
+            except RuntimeError:
+                pass  # 창이 이미 닫혀서 C++ 쪽 객체가 사라진 경우
         self.render()
 
     def persist(self) -> None:
