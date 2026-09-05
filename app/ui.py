@@ -830,7 +830,10 @@ class CalendarMonthView(QWidget):
         for column, weekday_name in enumerate(WEEKDAY_LABELS):
             heading = QLabel(weekday_name)
             heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            heading.setStyleSheet(f"color: {weekday_text_color(column)}; font-weight: 600;")
+            heading.setStyleSheet(
+                f"color: {weekday_text_color(column)}; font-weight: 600;"
+                f"border-bottom: 1px solid {BORDER}; padding-bottom: 6px;"
+            )
             self.grid.addWidget(heading, 0, column)
             self.grid.setColumnStretch(column, 1)
 
@@ -977,7 +980,7 @@ class CalendarMonthView(QWidget):
             for column, day in enumerate(week):
                 in_month = day.month == self.current_month
                 cell = QWidget()
-                cell.setStyleSheet(f"background: {CANVAS};")
+                cell.setStyleSheet(f"background: {CANVAS}; border-bottom: 1px solid {BORDER};")
                 cell_layout = QVBoxLayout(cell)
                 cell_layout.setContentsMargins(6, 4, 0, 0)
                 cell_layout.setSpacing(0)
