@@ -1451,6 +1451,24 @@ class MainWindow(QMainWindow):
             if sibling:
                 sibling.order = index
 
+    def _infer_drop_parent(self, column: str, task_id: str, row: int) -> str | None:
+        """같은 칸 안에서 순서만 바꿔 놓았을 때, 놓인 위치 바로 위 카드를 보고 새
+        parent_id를 정합니다 — 하위 업무 카드 바로 다음에 놓으면 그 부모의 하위로 남고,
+        최상위 카드 바로 다음(또는 맨 위)에 놓으면 다시 최상위로 돌아옵니다. 이게 없으면
+        한 번 하위로 들어간 업무는 같은 칸 안에서 순서만 바꿔도 계속 하위에 갇혀 있었습니다."""
+        flat = [t for t in self.visible_tasks(column) if t.id != task_id]
+        row = max(0, min(row, len(flat)))
+        if row == 0:
+            return None
+        anchor = flat[row - 1]
+        if anchor.parent_id is not None:
+            return anchor.parent_id
+        # anchor가 최상위 업무인 경우: 바로 다음 카드가 그 하위 업무라면(부모와 첫 하위
+        # 업무 사이에 끼워 넣는 상황) 최상위로 튀어나오지 않고 그 하위로 들어가게 합니다.
+        if row < len(flat) and flat[row].parent_id == anchor.id:
+            return anchor.id
+        return None
+
     def on_task_dropped(self, task_id: str, column: str, row: int, moved_across: bool) -> None:
         task = self.find(task_id)
         if task is None:
@@ -1459,6 +1477,8 @@ class MainWindow(QMainWindow):
             task.column = column
             task.pinned = True
             task.parent_id = None
+        else:
+            task.parent_id = self._infer_drop_parent(column, task_id, row)
         self.reorder(column, task_id, row)
         self.persist()
         self.render()
