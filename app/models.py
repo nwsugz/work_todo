@@ -29,6 +29,8 @@ class Task:
     checked: bool = False             # 체크박스 표시(취소선). 목록 위치·숨김에는 영향 없음
     done: bool = False
     order: int = 0
+    parent_id: str | None = None      # 상위 업무 id. 있으면 프로젝트의 하위 업무
+    collapsed: bool = False           # 하위 업무를 접어뒀는지 (자신이 상위 업무일 때만 의미 있음)
     id: str = field(default_factory=_new_id)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
@@ -46,6 +48,8 @@ class Task:
             "checked": self.checked,
             "done": self.done,
             "order": self.order,
+            "parent_id": self.parent_id,
+            "collapsed": self.collapsed,
             "created_at": self.created_at,
         }
 
@@ -66,6 +70,8 @@ class Task:
             checked=bool(data.get("checked", False)),
             done=bool(data.get("done", False)),
             order=int(data.get("order", 0)),
+            parent_id=(str(data["parent_id"]) if data.get("parent_id") else None),
+            collapsed=bool(data.get("collapsed", False)),
             id=str(data.get("id") or _new_id()),
             created_at=str(data.get("created_at") or datetime.now().isoformat(timespec="seconds")),
         )
