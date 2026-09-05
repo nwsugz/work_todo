@@ -396,7 +396,7 @@ class ColumnList(QListWidget):
             item = QListWidgetItem()
             item.setData(ROLE_TASK_ID, task_id)
             item.setData(ROLE_CARD, card)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
             self.addItem(item)
             if task_id == current_id:
                 self.setCurrentItem(item)
@@ -489,12 +489,16 @@ class ColumnList(QListWidget):
 
     def dragEnterEvent(self, event) -> None:
         if isinstance(event.source(), ColumnList):
+            super().dragEnterEvent(event)
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event) -> None:
         if isinstance(event.source(), ColumnList):
+            # 부모 클래스를 불러야 Qt가 드롭 위치 표시선(카테고리 목록 드래그할 때 보이는 것과
+            # 같은 줄)을 계산하고 그려 줍니다. 이걸 안 부르면 표시선이 전혀 안 보였습니다.
+            super().dragMoveEvent(event)
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -525,7 +529,13 @@ class ColumnList(QListWidget):
 
         row = target_index.row()
         if row < 0:
-            row = self.count()
+            # 카드 위/아래 빈 공간에 놓으면 여기 걸립니다. 맨 위 카드보다도 위쪽에 놓았으면
+            # 맨 앞으로, 그 외(맨 아래 등)에는 맨 뒤로 보냅니다 — 안 그러면 맨 위로 옮기려는
+            # 드래그가 항상 맨 뒤로 가버렸습니다.
+            if self.count() > 0 and pos.y() < self.visualItemRect(self.item(0)).top():
+                row = 0
+            else:
+                row = self.count()
         elif indicator == QAbstractItemView.DropIndicatorPosition.BelowItem:
             row += 1
 
@@ -1394,7 +1404,7 @@ class MainWindow(QMainWindow):
                 item = QListWidgetItem()
                 item.setData(ROLE_TASK_ID, task.id)
                 item.setData(ROLE_CARD, self._card(task, in_done_view=self.show_done))
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                 listing.addItem(item)
                 if task.id == selected_id:
                     listing.setCurrentItem(item)
