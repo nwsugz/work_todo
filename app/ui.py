@@ -241,6 +241,9 @@ def app_stylesheet() -> str:
     QPushButton#primary {{ background: {PRIMARY_BG}; color: {PRIMARY_TEXT}; font-weight: 600; }}
     QPushButton#primary:hover {{ background: {PRIMARY_BG}; }}
     QPushButton#collapseToggle {{ padding: 2px; border: none; }}
+    QPushButton#doneToggle {{ background: {SURFACE_HOVER}; }}
+    QPushButton#doneToggle:hover {{ background: {SELECTED_BG}; }}
+    QPushButton#doneToggle:checked {{ background: {SURFACE_HOVER}; color: {AMBER}; }}
     QListWidget {{
         background: transparent; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px;
     }}
@@ -1211,6 +1214,7 @@ class MainWindow(QMainWindow):
         add_button.setObjectName("primary")
         add_button.clicked.connect(self.add_task)
         self.done_toggle = QPushButton("완료 항목 보기")
+        self.done_toggle.setObjectName("doneToggle")
         self.done_toggle.setCheckable(True)
         self.done_toggle.toggled.connect(self.toggle_done)
         history_button = QPushButton("📅")
@@ -1258,7 +1262,7 @@ class MainWindow(QMainWindow):
         with QSignalBlocker(self.done_toggle):
             self.done_toggle.setChecked(bool(self.settings.get("show_done", False)))
         self.show_done = self.done_toggle.isChecked()
-        self.done_toggle.setText("TODO목록" if self.show_done else "완료 항목 보기")
+        self.done_toggle.setText("TODO 목록" if self.show_done else "완료 항목 보기")
         self._apply_done_label()
         self.lists[TODO].setDragEnabled(not self.show_done)
         self.lists[TODO].setAcceptDrops(not self.show_done)
@@ -1579,7 +1583,7 @@ class MainWindow(QMainWindow):
 
     def toggle_done(self, checked: bool) -> None:
         self.show_done = checked
-        self.done_toggle.setText("TODO목록" if checked else "완료 항목 보기")
+        self.done_toggle.setText("TODO 목록" if checked else "완료 항목 보기")
         self._apply_done_label()
         self.lists[TODO].setDragEnabled(not checked)
         self.lists[TODO].setAcceptDrops(not checked)
