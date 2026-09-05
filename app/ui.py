@@ -244,7 +244,9 @@ def app_stylesheet() -> str:
     QListWidget {{
         background: transparent; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px;
     }}
-    QListWidget::item {{ border: none; }}
+    QListWidget::item {{ border: none; padding: 4px; }}
+    QListWidget::item:selected {{ background: {SELECTED_BG}; color: {TEXT}; }}
+    QListWidget::item:selected:!active {{ background: {SELECTED_BG}; color: {TEXT}; }}
     QTreeWidget {{
         background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; color: {TEXT};
     }}
