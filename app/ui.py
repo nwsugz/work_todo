@@ -942,13 +942,27 @@ class CalendarMonthView(QWidget):
             # (둥근 카드 대신 스프레드시트에 가까운 모양 — 요청하신 참고 이미지 스타일).
             for column, day in enumerate(week):
                 in_month = day.month == self.current_month
-                cell = QLabel(str(day.day))
-                cell.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-                cell.setContentsMargins(6, 4, 0, 0)
-                cell.setStyleSheet(
-                    f"color: {TEXT if in_month else MUTED}; font-weight: 600;"
-                    f"border: 1px solid {BORDER}; background: {CANVAS};"
-                )
+                cell = QWidget()
+                cell.setStyleSheet(f"background: {CANVAS}; border: 1px solid {BORDER};")
+                cell_layout = QVBoxLayout(cell)
+                cell_layout.setContentsMargins(6, 4, 0, 0)
+                cell_layout.setSpacing(0)
+                cell_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+                day_label = QLabel(str(day.day))
+                if day == date.today():
+                    day_label.setFixedSize(22, 22)
+                    day_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    day_label.setStyleSheet(
+                        "background-color: #e5484d; color: #ffffff;"
+                        "font-weight: 700; border-radius: 11px;"
+                    )
+                else:
+                    day_label.setStyleSheet(
+                        f"color: {TEXT if in_month else MUTED}; font-weight: 600; background: transparent;"
+                    )
+                cell_layout.addWidget(day_label)
+
                 cell.setCursor(Qt.CursorShape.PointingHandCursor)
                 cell.mousePressEvent = lambda _event, d=day: self.dayClicked.emit(d)
                 self.grid.addWidget(cell, row_cursor, column, 1 + lanes_used, 1)
