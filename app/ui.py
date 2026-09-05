@@ -23,6 +23,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCalendarWidget,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -42,9 +43,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -187,6 +190,39 @@ class NoWheelDateEdit(QDateEdit):
         event.ignore()
 
 
+def _reset_weekend_date_colors(calendar: QCalendarWidget) -> None:
+    """setWeekdayTextFormat()은 요일 헤더 글자뿐 아니라 그 요일에 해당하는 날짜 칸까지
+    같이 색이 입혀집니다. 요일 헤더(일/토)만 색을 넣고 싶어서, 지금 보이는 달의 주말
+    날짜 칸은 다시 평소 글자색으로 되돌립니다."""
+    normal = QTextCharFormat()
+    normal.setForeground(QColor(TEXT))
+    year, month = calendar.yearShown(), calendar.monthShown()
+    day = QDate(year, month, 1)
+    while day.month() == month:
+        if day.dayOfWeek() in (6, 7):  # Qt.DayOfWeek: 토요일=6, 일요일=7
+            calendar.setDateTextFormat(day, normal)
+        day = day.addDays(1)
+
+
+def _fix_calendar_navigation_bar(calendar: QCalendarWidget) -> None:
+    """'9월 2026년' 순서로 나오던 걸 '2026년 9월' 순서로 바꾸고, 연도를 직접 입력하는
+    스핀박스가 잘려 보이던 것도 폭을 넉넉히 줘서 고칩니다."""
+    navbar = calendar.findChild(QWidget, "qt_calendar_navigationbar")
+    if navbar is None or navbar.layout() is None:
+        return
+    layout = navbar.layout()
+    month_button = navbar.findChild(QToolButton, "qt_calendar_monthbutton")
+    year_button = navbar.findChild(QToolButton, "qt_calendar_yearbutton")
+    if month_button is None or year_button is None:
+        return
+    month_index = layout.indexOf(month_button)
+    layout.removeWidget(year_button)
+    layout.insertWidget(month_index, year_button)
+    year_edit = navbar.findChild(QSpinBox, "qt_calendar_yearedit")
+    if year_edit is not None:
+        year_edit.setMinimumWidth(70)
+
+
 def style_calendar_popup(date_edit: QDateEdit) -> None:
     """요일 표시줄(일월화수목금토)은 QCalendarWidget이 스타일시트를 안 타고 직접 그려서,
     코드로 형식을 지정해야 어두운 배경에서도 글자가 보입니다. 달력 팝업이 있는 QDateEdit마다
@@ -195,12 +231,18 @@ def style_calendar_popup(date_edit: QDateEdit) -> None:
     header_format = QTextCharFormat()
     header_format.setBackground(QColor(SURFACE))
     header_format.setForeground(QColor(TEXT))
-    header_format.setFontUnderline(True)  # 요일 글자 아래에 밑줄을 그어 날짜 칸과 구분되게 합니다
     calendar.setHeaderTextFormat(header_format)
-    weekend_format = QTextCharFormat()
-    weekend_format.setForeground(QColor(TEXT))
-    calendar.setWeekdayTextFormat(Qt.DayOfWeek.Saturday, weekend_format)
-    calendar.setWeekdayTextFormat(Qt.DayOfWeek.Sunday, weekend_format)
+
+    sunday_format = QTextCharFormat()
+    sunday_format.setForeground(QColor(weekday_text_color(0)))
+    saturday_format = QTextCharFormat()
+    saturday_format.setForeground(QColor(weekday_text_color(6)))
+    calendar.setWeekdayTextFormat(Qt.DayOfWeek.Sunday, sunday_format)
+    calendar.setWeekdayTextFormat(Qt.DayOfWeek.Saturday, saturday_format)
+    _reset_weekend_date_colors(calendar)
+    calendar.currentPageChanged.connect(lambda _y, _m: _reset_weekend_date_colors(calendar))
+
+    _fix_calendar_navigation_bar(calendar)
 
 
 def due_caption(task: Task, today: date | None = None) -> str:
@@ -274,14 +316,15 @@ def app_stylesheet() -> str:
     QCalendarWidget QWidget {{ background: {SURFACE}; color: {TEXT}; }}
     QCalendarWidget QToolButton {{ background: transparent; color: {TEXT}; icon-size: 16px; }}
     QCalendarWidget QMenu {{ background: {SURFACE}; color: {TEXT}; }}
-    QCalendarWidget QSpinBox {{ background: {SURFACE}; color: {TEXT}; }}
+    QCalendarWidget QSpinBox {{ background: {SURFACE}; color: {TEXT}; padding: 2px 4px; }}
     QCalendarWidget QAbstractItemView {{
         background: {SURFACE}; color: {TEXT}; outline: none;
         selection-background-color: {PIN}; selection-color: #FFFFFF;
     }}
     QCalendarWidget QAbstractItemView:disabled {{ color: {MUTED}; }}
     QCalendarWidget QHeaderView::section {{
-        background: {SURFACE}; color: {TEXT}; border: none; padding: 4px;
+        background: {SURFACE}; color: {TEXT}; padding: 4px;
+        border: none; border-bottom: 1px solid {BORDER};
     }}
     """
 
