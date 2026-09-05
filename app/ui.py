@@ -1660,34 +1660,45 @@ class MainWindow(QMainWindow):
 
     def _set_always_on_top(self, checked: bool) -> None:
         """창이 이미 떠 있는 상태에서 '항상 위'를 끄고 켭니다.
-        setWindowFlags()로 하면 네이티브 창을 통째로 다시 만들어야 해서 화면이 깜빡이고,
-        Windows에서는 끌 때 실제로는 최상단 고정이 안 풀리는 경우가 있었습니다. 대신
-        Windows API(SetWindowPos)를 직접 불러서 창을 다시 만들지 않고 바로 반영합니다."""
+        Qt의 setWindowFlags()만으로는 두 가지 문제가 있었습니다: (1) 네이티브 창을
+        통째로 다시 만들어야 해서 화면이 깜빡이고, (2) Windows API(SetWindowPos)를
+        직접 안 부르면 꺼도 실제로는 최상단 고정이 안 풀리는 경우가 있었습니다.
+        그래서 Qt 쪽 플래그도 갱신해 내부 상태를 맞추고(다음에 창이 다시 만들어질
+        때를 대비), Windows에서는 추가로 네이티브 API를 직접 호출해 확실히 반영합니다."""
+        was_visible = self.isVisible()
+        flags = self.windowFlags()
+        if checked:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        else:
+            flags &= ~Qt.WindowType.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+        if was_visible:
+            self.show()
+
         if sys.platform == "win32":
             import ctypes
+            from ctypes import wintypes
 
-            HWND_TOPMOST = -1
-            HWND_NOTOPMOST = -2
+            user32 = ctypes.windll.user32
+            user32.SetWindowPos.argtypes = [
+                wintypes.HWND, wintypes.HWND,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                wintypes.UINT,
+            ]
+            user32.SetWindowPos.restype = wintypes.BOOL
+
+            HWND_TOPMOST = wintypes.HWND(-1)
+            HWND_NOTOPMOST = wintypes.HWND(-2)
             SWP_NOMOVE = 0x0002
             SWP_NOSIZE = 0x0001
             SWP_NOACTIVATE = 0x0010
-            hwnd = int(self.winId())
-            ctypes.windll.user32.SetWindowPos(
+            hwnd = wintypes.HWND(int(self.winId()))
+            user32.SetWindowPos(
                 hwnd,
                 HWND_TOPMOST if checked else HWND_NOTOPMOST,
                 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             )
-        else:
-            was_visible = self.isVisible()
-            flags = self.windowFlags()
-            if checked:
-                flags |= Qt.WindowType.WindowStaysOnTopHint
-            else:
-                flags &= ~Qt.WindowType.WindowStaysOnTopHint
-            self.setWindowFlags(flags)
-            if was_visible:
-                self.show()
 
     def toggle_always_on_top(self, checked: bool) -> None:
         self._set_always_on_top(checked)
