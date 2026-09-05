@@ -517,8 +517,21 @@ class ColumnList(QListWidget):
             # 같은 줄)을 계산하고 그려 줍니다. 이걸 안 부르면 표시선이 전혀 안 보였습니다.
             super().dragMoveEvent(event)
             event.acceptProposedAction()
+            self._autoscroll_for_drag(event.position().toPoint())
         else:
             event.ignore()
+
+    def _autoscroll_for_drag(self, pos: QPoint) -> None:
+        """카드가 화면에 다 안 보일 만큼 많을 때, 목록 위/아래 가장자리로 드래그하면
+        스크롤이 되어야 맨 위/아래 카드까지 옮길 수 있습니다. Qt 기본 자동 스크롤이
+        이 커스텀 드래그 처리와 맞물려 잘 안 먹는 경우가 있어 직접 처리합니다."""
+        margin = 28
+        step = 14
+        bar = self.verticalScrollBar()
+        if pos.y() < margin:
+            bar.setValue(bar.value() - step)
+        elif pos.y() > self.viewport().height() - margin:
+            bar.setValue(bar.value() + step)
 
     def dropEvent(self, event) -> None:
         source = event.source()
