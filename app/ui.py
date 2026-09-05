@@ -206,7 +206,7 @@ def _reset_weekend_date_colors(calendar: QCalendarWidget) -> None:
 
 def _fix_calendar_navigation_bar(calendar: QCalendarWidget) -> None:
     """'9월 2026년' 순서로 나오던 걸 '2026년 9월' 순서로 바꾸고, 연도를 직접 입력하는
-    스핀박스가 잘려 보이던 것도 폭·높이를 넉넉히 줘서 고칩니다."""
+    스핀박스가 잘려 보이던 것도 폭을 넉넉히 줘서 고칩니다."""
     navbar = calendar.findChild(QWidget, "qt_calendar_navigationbar")
     if navbar is None or navbar.layout() is None:
         return
@@ -218,17 +218,9 @@ def _fix_calendar_navigation_bar(calendar: QCalendarWidget) -> None:
     month_index = layout.indexOf(month_button)
     layout.removeWidget(year_button)
     layout.insertWidget(month_index, year_button)
-
-    def _fix_year_edit() -> None:
-        # 연도 스핀박스(qt_calendar_yearedit)는 연도 버튼을 눌러야 그 순간 생기는
-        # 위젯이라, 여기서 미리 찾아 크기를 정해봐야 아직 없어서 아무 효과가 없었습니다.
-        # 버튼을 누른 '다음'에(Qt가 스핀박스를 만든 뒤에) 찾아서 크기를 키웁니다.
-        year_edit = navbar.findChild(QSpinBox, "qt_calendar_yearedit")
-        if year_edit is not None:
-            year_edit.setMinimumWidth(90)
-            year_edit.setMinimumHeight(28)
-
-    year_button.clicked.connect(_fix_year_edit)
+    year_edit = navbar.findChild(QSpinBox, "qt_calendar_yearedit")
+    if year_edit is not None:
+        year_edit.setMinimumWidth(70)
 
 
 def style_calendar_popup(date_edit: QDateEdit) -> None:
