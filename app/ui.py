@@ -319,11 +319,6 @@ class CardDelegate(QStyledItemDelegate):
         painter.setBrush(background)
         painter.drawRoundedRect(rect, 6, 6)
 
-        if card.get("pinned"):
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(PIN))
-            painter.drawRoundedRect(QRect(rect.left() + 1, rect.top() + 8, 3, rect.height() - 16), 2, 2)
-
         if card.get("has_children"):
             painter.setFont(ui_font(9))
             painter.setPen(QColor(MUTED))
@@ -332,7 +327,10 @@ class CardDelegate(QStyledItemDelegate):
 
         box = checkbox_rect(rect)
         checked = bool(card.get("checked")) or bool(card.get("done"))
-        painter.setPen(QPen(QColor(DONE_GREEN if checked else BORDER), 1.4))
+        # 선택된 카드의 배경(SELECTED_BG)이 테두리 색(BORDER)과 거의 비슷해서, 카드를
+        # 선택하면 체크박스 테두리가 거의 안 보이던 문제가 있었습니다. MUTED는 두 배경
+        # 모두에서 뚜렷이 보여서 선택 여부와 상관없이 이 색으로 통일합니다.
+        painter.setPen(QPen(QColor(DONE_GREEN if checked else MUTED), 1.4))
         painter.setBrush(QColor(DONE_GREEN) if checked else Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(box, 4, 4)
         if checked:
@@ -1469,7 +1467,6 @@ class MainWindow(QMainWindow):
             "title": task.title,
             "meta": "  ·  ".join(parts),
             "note": task.note.strip(),
-            "pinned": task.pinned,
             "checked": task.checked,
             "done": task.done,
             "urgency": task_urgency(task),
@@ -1615,14 +1612,6 @@ class MainWindow(QMainWindow):
             setattr(task, key, value)
         if not task.pinned:
             task.column, task.matched_rule = classify(task, self.rules)
-        self.persist()
-        self.render()
-
-    def unpin(self, task: Task) -> None:
-        self._push_undo()
-        task.pinned = False
-        task.parent_id = None  # 하위 업무는 항상 고정 상태이므로, 고정을 풀면 상위에서도 떼어냅니다
-        task.column, task.matched_rule = classify(task, self.rules)
         self.persist()
         self.render()
 
@@ -1785,9 +1774,7 @@ class MainWindow(QMainWindow):
         if task.parent_id is None:
             menu.addAction("하위 업무 추가", lambda: self.add_subtask(task))
         menu.addAction("완료 취소" if task.done else "완료 처리", lambda: self.set_done(task, not task.done))
-        if task.pinned:
-            menu.addAction("고정 풀고 규칙에 맡기기", lambda: self.unpin(task))
-        else:
+        if not task.pinned:
             menu.addAction("이 자리에 고정", lambda: self.pin(task))
         menu.addSeparator()
         menu.addAction("삭제", lambda: self.delete_task(task))
