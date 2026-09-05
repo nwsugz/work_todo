@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import calendar as calendar_module
 import sys
-from datetime import date
+from datetime import date, datetime
 
 from PySide6.QtCore import QDate, QPoint, QPointF, QRect, QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtGui import (
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -41,6 +43,8 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -49,26 +53,76 @@ from . import storage
 from .models import COLUMNS, TBD, TODO, Task
 from .rules import apply_rules, classify
 
-CANVAS = "#1C1F26"
-SURFACE = "#262A33"
-BORDER = "#343A45"
-TEXT = "#E6E8EC"
-MUTED = "#98A0AB"
-AMBER = "#E2B341"
-SLATE = "#7C8593"
-PIN = "#7FB2E5"
-DONE_GREEN = "#3FBF6F"
-URGENT_OVERDUE = "#E2574C"
-URGENT_OVERDUE_BG = "#3B2229"
-URGENT_SOON = "#E2954A"
-URGENT_SOON_BG = "#3A2C1E"
 URGENT_DAYS = 3  # 마감일까지 이 안이면 '임박'으로 표시
+
+# 노션풍 라이트/다크 팔레트. CardDelegate 등에서는 아래 이름들을 그냥 모듈 전역 변수처럼
+# 씁니다(예: QColor(SURFACE)) — apply_theme()이 이 이름들 자체를 다시 바인딩해서 테마를
+# 바꾸면, 이미 정의된 함수들도 다음 호출부터 새 색을 그대로 씁니다(파이썬 전역 조회 특성).
+THEMES: dict[str, dict[str, str]] = {
+    "dark": {
+        "CANVAS": "#191919",
+        "SURFACE": "#2B2B2B",
+        "SURFACE_HOVER": "#363636",
+        "SELECTED_BG": "#3A3A3A",
+        "BORDER": "#3D3D3D",
+        "TEXT": "#E9E9E7",
+        "MUTED": "#9B9A97",
+        "AMBER": "#D9A441",
+        "SLATE": "#8B8B88",
+        "PIN": "#5B9BD9",
+        "DONE_GREEN": "#3FA172",
+        "URGENT_OVERDUE": "#E0555A",
+        "URGENT_OVERDUE_BG": "#3A2426",
+        "URGENT_SOON": "#D98A3D",
+        "URGENT_SOON_BG": "#332A20",
+        "PRIMARY_BG": "#D9A441",
+        "PRIMARY_TEXT": "#191919",
+    },
+    "light": {
+        "CANVAS": "#FFFFFF",
+        "SURFACE": "#F7F6F3",
+        "SURFACE_HOVER": "#EDECE9",
+        "SELECTED_BG": "#E3E2DF",
+        "BORDER": "#E3E2E0",
+        "TEXT": "#37352F",
+        "MUTED": "#9B9A97",
+        "AMBER": "#C9791A",
+        "SLATE": "#6B6B68",
+        "PIN": "#2383E2",
+        "DONE_GREEN": "#2F9E64",
+        "URGENT_OVERDUE": "#E03E3E",
+        "URGENT_OVERDUE_BG": "#FBEAEA",
+        "URGENT_SOON": "#D9730D",
+        "URGENT_SOON_BG": "#FBF0E4",
+        "PRIMARY_BG": "#2383E2",
+        "PRIMARY_TEXT": "#FFFFFF",
+    },
+}
+
+CURRENT_THEME = "dark"
+
+
+def apply_theme(name: str) -> None:
+    """색상 전역 변수들을 해당 테마 값으로 다시 바인딩합니다."""
+    global CURRENT_THEME
+    if name not in THEMES:
+        name = "dark"
+    CURRENT_THEME = name
+    globals().update(THEMES[name])
+
+
+apply_theme(CURRENT_THEME)
 
 ROLE_TASK_ID = Qt.ItemDataRole.UserRole
 ROLE_CARD = Qt.ItemDataRole.UserRole + 1
 
 COLUMN_LABEL = {TODO: "TODO", TBD: "TBD"}
-COLUMN_ACCENT = {TODO: AMBER, TBD: SLATE}
+
+
+def column_accent(column: str) -> str:
+    """COLUMN_ACCENT를 딕셔너리로 미리 만들어두면 테마를 바꿔도 예전 색이 그대로 남기 때문에,
+    호출할 때마다 지금 테마의 AMBER/SLATE를 그대로 읽어옵니다."""
+    return AMBER if column == TODO else SLATE
 
 TBD_COLLAPSE_BUTTON_WIDTH = 22
 BOARD_SPACING = 14         # TODO/TBD 두 칸 사이 간격(펼쳐졌을 때)
@@ -78,9 +132,9 @@ CHECK_SIZE = 16
 CHEVRON_SIZE = 13
 GUTTER = 24        # 체크박스 시작 위치(항상 이만큼 왼쪽 여백을 둬서, 화살표가 없는 카드도 정렬이 맞습니다)
 INDENT_STEP = 22   # 하위 업무 카드를 오른쪽으로 밀어 넣는 폭
-CARD_MIN_HEIGHT = 62
+CARD_MIN_HEIGHT = 50
 CARD_TOP_PAD = 10
-CARD_BOTTOM_PAD = 10
+CARD_BOTTOM_PAD = 8
 TITLE_META_GAP = 4
 TITLE_FONT_SIZE = 10
 META_FONT_SIZE = 8
@@ -121,6 +175,22 @@ def ui_font(size: int = 10, bold: bool = False) -> QFont:
     return font
 
 
+def style_calendar_popup(date_edit: QDateEdit) -> None:
+    """요일 표시줄(일월화수목금토)은 QCalendarWidget이 스타일시트를 안 타고 직접 그려서,
+    코드로 형식을 지정해야 어두운 배경에서도 글자가 보입니다. 달력 팝업이 있는 QDateEdit마다
+    똑같이 적용해야 하므로 한 곳에 모아둡니다."""
+    calendar = date_edit.calendarWidget()
+    header_format = QTextCharFormat()
+    header_format.setBackground(QColor(SURFACE))
+    header_format.setForeground(QColor(TEXT))
+    header_format.setFontUnderline(True)  # 요일 글자 아래에 밑줄을 그어 날짜 칸과 구분되게 합니다
+    calendar.setHeaderTextFormat(header_format)
+    weekend_format = QTextCharFormat()
+    weekend_format.setForeground(QColor(TEXT))
+    calendar.setWeekdayTextFormat(Qt.DayOfWeek.Saturday, weekend_format)
+    calendar.setWeekdayTextFormat(Qt.DayOfWeek.Sunday, weekend_format)
+
+
 def due_caption(task: Task, today: date | None = None) -> str:
     if not task.due:
         return "마감일 없음"
@@ -159,33 +229,38 @@ def app_stylesheet() -> str:
     뜨는 위젯에는 전달되지 않아서, 반드시 QApplication 레벨에서 걸어야 합니다."""
     return f"""
     QMainWindow, QWidget {{ background: {CANVAS}; color: {TEXT}; }}
-    QLabel {{ color: {TEXT}; }}
+    QLabel {{ color: {TEXT}; background: transparent; }}
     QLabel#count {{ color: {MUTED}; font-size: 12px; }}
     QPushButton {{
-        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 5px;
+        background: transparent; border: 1px solid transparent; border-radius: 6px;
         padding: 6px 12px; color: {TEXT};
     }}
-    QPushButton:hover {{ background: #2F3541; }}
-    QPushButton:checked {{ border-color: {PIN}; color: {PIN}; }}
-    QPushButton#primary {{ background: {AMBER}; border-color: {AMBER}; color: #1C1F26; font-weight: bold; }}
-    QPushButton#primary:hover {{ background: #EFC456; }}
-    QPushButton#collapseToggle {{ padding: 2px; }}
+    QPushButton:hover {{ background: {SURFACE_HOVER}; }}
+    QPushButton:checked {{ background: {SURFACE_HOVER}; color: {PIN}; }}
+    QPushButton#primary {{ background: {PRIMARY_BG}; color: {PRIMARY_TEXT}; font-weight: 600; }}
+    QPushButton#primary:hover {{ background: {PRIMARY_BG}; }}
+    QPushButton#collapseToggle {{ padding: 2px; border: none; }}
     QListWidget {{
-        background: #1F232B; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px;
+        background: transparent; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px;
     }}
     QListWidget::item {{ border: none; }}
+    QTreeWidget {{
+        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; color: {TEXT};
+    }}
+    QTreeWidget::item {{ padding: 4px; }}
+    QTreeWidget::item:selected {{ background: {SELECTED_BG}; color: {TEXT}; }}
     QLineEdit, QPlainTextEdit, QDateEdit {{
-        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 4px;
-        padding: 5px; color: {TEXT};
+        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px;
+        padding: 6px 8px; color: {TEXT};
     }}
     QDialog {{ background: {CANVAS}; }}
     QCalendarWidget QWidget {{ background: {SURFACE}; color: {TEXT}; }}
-    QCalendarWidget QToolButton {{ background: {SURFACE}; color: {TEXT}; icon-size: 16px; }}
+    QCalendarWidget QToolButton {{ background: transparent; color: {TEXT}; icon-size: 16px; }}
     QCalendarWidget QMenu {{ background: {SURFACE}; color: {TEXT}; }}
     QCalendarWidget QSpinBox {{ background: {SURFACE}; color: {TEXT}; }}
     QCalendarWidget QAbstractItemView {{
         background: {SURFACE}; color: {TEXT}; outline: none;
-        selection-background-color: {AMBER}; selection-color: #1C1F26;
+        selection-background-color: {PIN}; selection-color: #FFFFFF;
     }}
     QCalendarWidget QAbstractItemView:disabled {{ color: {MUTED}; }}
     QCalendarWidget QHeaderView::section {{
@@ -224,7 +299,7 @@ class CardDelegate(QStyledItemDelegate):
         elif urgency == "soon":
             background, border_color, border_width = QColor(URGENT_SOON_BG), QColor(URGENT_SOON), 1.6
         else:
-            background = QColor("#2F3541") if selected else QColor(SURFACE)
+            background = QColor(SELECTED_BG) if selected else QColor(SURFACE)
             border_color, border_width = QColor(BORDER), 1.0
         if selected and urgency:
             background = background.lighter(115)
@@ -486,22 +561,22 @@ class TaskDialog(QDialog):
         if task and task.category in categories:
             self.category_combo.setCurrentIndex(categories.index(task.category) + 1)
 
+        self.start_edit = QDateEdit()
+        self.start_edit.setCalendarPopup(True)
+        self.start_edit.setDisplayFormat("yyyy-MM-dd")
+        style_calendar_popup(self.start_edit)
+        if task and task.start:
+            self.start_edit.setDate(QDate.fromString(task.start, "yyyy-MM-dd"))
+        elif task and task.created_at:
+            self.start_edit.setDate(QDate.fromString(task.created_at[:10], "yyyy-MM-dd"))
+        else:
+            self.start_edit.setDate(QDate.currentDate())  # 새 업무는 지금 등록하는 날짜가 기본값
+
         self.no_due = QCheckBox("마감일 없음")
         self.due_edit = QDateEdit()
         self.due_edit.setCalendarPopup(True)
         self.due_edit.setDisplayFormat("yyyy-MM-dd")
-        # 요일 표시줄(일월화수목금토)은 QCalendarWidget이 스타일시트를 안 타고 직접 그려서,
-        # 코드로 형식을 지정해야 어두운 배경에서도 글자가 보입니다.
-        calendar = self.due_edit.calendarWidget()
-        header_format = QTextCharFormat()
-        header_format.setBackground(QColor(SURFACE))
-        header_format.setForeground(QColor(TEXT))
-        header_format.setFontUnderline(True)  # 요일 글자 아래에 밑줄을 그어 날짜 칸과 구분되게 합니다
-        calendar.setHeaderTextFormat(header_format)
-        weekend_format = QTextCharFormat()
-        weekend_format.setForeground(QColor(TEXT))
-        calendar.setWeekdayTextFormat(Qt.DayOfWeek.Saturday, weekend_format)
-        calendar.setWeekdayTextFormat(Qt.DayOfWeek.Sunday, weekend_format)
+        style_calendar_popup(self.due_edit)
         if task and task.due:
             self.due_edit.setDate(QDate.fromString(task.due, "yyyy-MM-dd"))
         else:
@@ -524,6 +599,7 @@ class TaskDialog(QDialog):
         form = QFormLayout()
         form.addRow("제목", self.title_edit)
         form.addRow("카테고리", self.category_combo)
+        form.addRow("시작일", self.start_edit)
         form.addRow("마감일", due_row)
         form.addRow("태그", self.tags_edit)
         form.addRow("메모", self.note_edit)
@@ -550,6 +626,7 @@ class TaskDialog(QDialog):
         return {
             "title": self.title_edit.text().strip(),
             "category": self.category_combo.currentData(),
+            "start": self.start_edit.date().toString("yyyy-MM-dd"),
             "due": None if self.no_due.isChecked() else self.due_edit.date().toString("yyyy-MM-dd"),
             "tags": tags,
             "note": self.note_edit.toPlainText().strip(),
@@ -564,6 +641,22 @@ class SettingsDialog(QDialog):
         self.window = window
         self.setWindowTitle("설정")
         self.setMinimumWidth(360)
+
+        theme_label = QLabel("테마")
+        self.light_button = QPushButton("☀ 라이트")
+        self.dark_button = QPushButton("🌙 다크")
+        self.light_button.setCheckable(True)
+        self.dark_button.setCheckable(True)
+        self.light_button.clicked.connect(lambda: self._set_theme("light"))
+        self.dark_button.clicked.connect(lambda: self._set_theme("dark"))
+        current_theme = self.window.settings.get("theme", CURRENT_THEME)
+        self.light_button.setChecked(current_theme == "light")
+        self.dark_button.setChecked(current_theme != "light")
+
+        theme_row = QHBoxLayout()
+        theme_row.addWidget(self.light_button)
+        theme_row.addWidget(self.dark_button)
+        theme_row.addStretch(1)
 
         category_label = QLabel("카테고리 우선순위")
         self.category_list = QListWidget()
@@ -582,9 +675,17 @@ class SettingsDialog(QDialog):
         category_buttons.addStretch(1)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(theme_label)
+        layout.addLayout(theme_row)
+        layout.addSpacing(10)
         layout.addWidget(category_label)
         layout.addWidget(self.category_list)
         layout.addLayout(category_buttons)
+
+    def _set_theme(self, name: str) -> None:
+        self.light_button.setChecked(name == "light")
+        self.dark_button.setChecked(name != "light")
+        self.window.apply_theme(name)
 
     def _category_names(self) -> list[str]:
         return [self.category_list.item(i).text() for i in range(self.category_list.count())]
@@ -609,6 +710,398 @@ class SettingsDialog(QDialog):
         self.window.reapply_rules()
 
 
+CALENDAR_CHIP_PALETTE = [
+    "#F7C6D0", "#F9DDB0", "#FBF0A9", "#C9E9C7", "#C6D9F7", "#DCC9F7",
+    "#F7C9DC", "#C9F7EC", "#F7E1C6", "#D6F7C9", "#C9CFF7", "#F0C9F7",
+]
+WEEKDAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"]
+CALENDAR_MAX_LANES = 3  # 한 주에 동시에 겹쳐 보여줄 수 있는 색상줄 최대 개수
+CALENDAR_DATE_ROW_HEIGHT = 26   # 날짜 숫자만 있는 줄의 최소 높이
+CALENDAR_LANE_ROW_HEIGHT = 34   # 막대 한 줄의 최소 높이(여백 포함)
+CALENDAR_BAR_OUTER_MARGIN = 6   # 날짜 숫자~첫 막대, 마지막 막대~칸 아래쪽 사이의 여유
+CALENDAR_BAR_INNER_MARGIN = 1   # 막대와 막대 사이의 아주 살짝만 남기는 간격
+
+
+def stable_palette_index(task_id: str, size: int) -> int:
+    """업무 id(16진수 문자열)에서 뽑아낸, 언제 계산해도 항상 같은 팔레트 인덱스."""
+    try:
+        return int(task_id, 16) % size
+    except ValueError:
+        return sum(ord(c) for c in task_id) % size
+
+
+def muted_chip_color(hex_color: str) -> str:
+    """완료된 업무의 색상줄을 회색 쪽으로 살짝 바래게 만들어, 진행 중인(원색+볼드) 업무와
+    한눈에 구분되게 합니다."""
+    color = QColor(hex_color)
+    gray = QColor(205, 205, 205)
+    blended = QColor(
+        (color.red() + gray.red() * 2) // 3,
+        (color.green() + gray.green() * 2) // 3,
+        (color.blue() + gray.blue() * 2) // 3,
+    )
+    return blended.name()
+
+
+def weekday_text_color(column: int) -> str:
+    """0=일요일은 은은한 빨강, 6=토요일은 은은한 파랑. 테마의 URGENT/PIN 톤을 그대로 재사용해서
+    쨍하지 않고 라이트/다크 모두에서 자연스럽게 어울립니다."""
+    if column == 0:
+        return URGENT_OVERDUE
+    if column == 6:
+        return PIN
+    return MUTED
+
+
+class CalendarMonthView(QWidget):
+    """완료한 대주제 업무를 시작일~마감일 구간의 색상줄로 월 달력에 보여줍니다.
+    날짜 숫자를 누르면 dayClicked가 그 날짜를 알려줍니다."""
+
+    dayClicked = Signal(object)  # datetime.date
+    monthRendered = Signal()  # 달이 바뀌거나 다시 그려질 때마다 — 창 크기를 다시 맞추는 데 씁니다
+
+    def __init__(self, window: "MainWindow", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.window = window
+        today = date.today()
+        self.current_year = today.year
+        self.current_month = today.month
+        self._day_cells: list[QWidget] = []
+
+        self.year_button = QPushButton()
+        self.year_button.setFont(ui_font(14, bold=True))
+        self.year_button.setToolTip("연도 선택")
+        self.year_button.clicked.connect(self._pick_year)
+        self.month_button = QPushButton()
+        self.month_button.setFont(ui_font(14, bold=True))
+        self.month_button.setToolTip("월 선택")
+        self.month_button.clicked.connect(self._pick_month)
+        prev_button = QPushButton("◀")
+        prev_button.setFixedWidth(32)
+        prev_button.clicked.connect(lambda: self._shift_month(-1))
+        next_button = QPushButton("▶")
+        next_button.setFixedWidth(32)
+        next_button.clicked.connect(lambda: self._shift_month(1))
+
+        header = QHBoxLayout()
+        header.addWidget(prev_button)
+        header.addStretch(1)
+        header.addWidget(self.year_button)
+        header.addWidget(self.month_button)
+        header.addStretch(1)
+        header.addWidget(next_button)
+
+        self.grid = QGridLayout()
+        self.grid.setSpacing(0)  # 칸 사이 간격 없이 붙여서, 막대가 날짜를 넘나들 때 끊겨 보이지 않게 합니다
+        for column, weekday_name in enumerate(WEEKDAY_LABELS):
+            heading = QLabel(weekday_name)
+            heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            heading.setStyleSheet(f"color: {weekday_text_color(column)}; font-weight: 600;")
+            self.grid.addWidget(heading, 0, column)
+            self.grid.setColumnStretch(column, 1)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addLayout(header)
+        outer.addLayout(self.grid)
+
+        self._render_month()
+
+    def _shift_month(self, delta: int) -> None:
+        month = self.current_month + delta
+        year = self.current_year
+        while month < 1:
+            month += 12
+            year -= 1
+        while month > 12:
+            month -= 12
+            year += 1
+        self.current_year, self.current_month = year, month
+        self._render_month()
+
+    def _pick_year(self) -> None:
+        year, ok = QInputDialog.getInt(self, "연도 선택", "연도", self.current_year, 1970, 2100, 1)
+        if ok:
+            self.current_year = year
+            self._render_month()
+
+    def _pick_month(self) -> None:
+        months = [f"{m}월" for m in range(1, 13)]
+        choice, ok = QInputDialog.getItem(
+            self, "월 선택", "월", months, self.current_month - 1, False
+        )
+        if ok:
+            self.current_month = months.index(choice) + 1
+            self._render_month()
+
+    def _task_spans(self) -> list[tuple[Task, date, date, bool]]:
+        """(업무, 시작일, 마감일, 완료여부) 튜플 목록. 대주제(최상위 업무) 중 기간을 알 수 있는
+        것만 대상입니다. 완료된 업무는 마감일이 없으면 완료한 날을 대신 씁니다. 진행 중인 업무는
+        마감일이 있어야 나옵니다(언제까지인지 알 수 없으면 막대를 그릴 수 없으므로)."""
+        spans: list[tuple[Task, date, date, bool]] = []
+        for task in self.window.tasks:
+            if task.parent_id is not None:
+                continue
+            end = None
+            if task.due:
+                try:
+                    end = date.fromisoformat(task.due)
+                except ValueError:
+                    end = None
+            if end is None and task.done and task.done_at:
+                try:
+                    end = date.fromisoformat(task.done_at[:10])
+                except ValueError:
+                    end = None
+            if end is None:
+                continue
+            start = end
+            if task.start:
+                try:
+                    start = date.fromisoformat(task.start)
+                except ValueError:
+                    start = end
+            if start > end:
+                start, end = end, start
+            spans.append((task, start, end, task.done))
+        return spans
+
+    def _render_month(self) -> None:
+        self.year_button.setText(f"{self.current_year}년")
+        self.month_button.setText(f"{self.current_month}월")
+        for widget in self._day_cells:
+            self.grid.removeWidget(widget)
+            widget.deleteLater()
+        self._day_cells.clear()
+
+        cal = calendar_module.Calendar(firstweekday=6)  # 일요일 시작
+        weeks = cal.monthdatescalendar(self.current_year, self.current_month)
+        grid_start, grid_end = weeks[0][0], weeks[-1][-1]
+
+        spans = self._task_spans()
+        visible_spans = [(t, s, e, d) for t, s, e, d in spans if s <= grid_end and e >= grid_start]
+
+        # 업무 id에서 뽑은 고정값으로 색을 정해서, 같은 업무는 달을 오갔다 와도 항상 같은 색이
+        # 나오게 합니다(매번 무작위로 다시 섞으면 왔다 갔다 할 때마다 색이 바뀌어 버립니다).
+        # 화면에 보이는 달 안에서만 겹치지 않으면 되므로, 같은 색이 우연히 겹치는 업무가
+        # 있으면 다음 빈 자리로 밀어 넣습니다.
+        seen_ids: set[str] = set()
+        visible_ids: list[str] = []
+        for task, _s, _e, _d in visible_spans:
+            if task.id not in seen_ids:
+                seen_ids.add(task.id)
+                visible_ids.append(task.id)
+        colors: dict[str, str] = {}
+        used_indices: set[int] = set()
+        for tid in visible_ids:
+            index = stable_palette_index(tid, len(CALENDAR_CHIP_PALETTE))
+            while index in used_indices:
+                index = (index + 1) % len(CALENDAR_CHIP_PALETTE)
+            used_indices.add(index)
+            colors[tid] = CALENDAR_CHIP_PALETTE[index]
+
+        # 1차: 주마다 실제로 필요한 lane 수만 먼저 계산합니다. 겹치는 업무가 적은 주는
+        # 그만큼만 자리를 차지해서, 빈 줄이 여러 개 남는 이전 방식보다 표처럼 촘촘하게 나옵니다.
+        week_plans = []
+        for week in weeks:
+            week_start, week_end = week[0], week[-1]
+            overlapping = [
+                (task, max(start, week_start), min(end, week_end), done)
+                for task, start, end, done in visible_spans
+                if start <= week_end and end >= week_start
+            ]
+            overlapping.sort(key=lambda item: item[1])
+            lane_ends: list[date | None] = [None] * CALENDAR_MAX_LANES
+            placed = []
+            for task, seg_start, seg_end, done in overlapping:
+                lane = next((i for i, e in enumerate(lane_ends) if e is None or e < seg_start), None)
+                if lane is None:
+                    continue  # 같은 주에 동시에 겹치는 업무가 lane 수보다 많으면 나머지는 생략합니다
+                lane_ends[lane] = seg_end
+                placed.append((task, seg_start, seg_end, lane, done))
+            lanes_used = max((p[3] for p in placed), default=-1) + 1
+            week_plans.append((week, placed, max(lanes_used, 1)))
+
+        # 주마다 칸 높이가 다르면 마지막 줄처럼 유독 좁아 보이는 주가 생기므로, 이번 달에서
+        # 가장 많이 겹치는 주를 기준으로 모든 주가 같은 줄 수(=같은 칸 크기)를 쓰게 맞춥니다.
+        uniform_lanes = max((lp[2] for lp in week_plans), default=1)
+
+        row_cursor = 1  # 0번 행은 요일 헤더
+        for week, placed, _week_lanes in week_plans:
+            lanes_used = uniform_lanes
+            week_start = week[0]
+
+            # 스팬 위젯(cell)의 minimumHeight만으로는 Qt가 날짜 줄/막대 줄에 높이를 어떻게
+            # 나눌지 애매하게 처리해서, 업무가 늘어날수록 줄이 눌리며 날짜가 가려지곤 했습니다.
+            # 그래서 각 행에 필요한 높이를 직접 지정해 확실하게 자리를 보장합니다.
+            self.grid.setRowMinimumHeight(row_cursor, CALENDAR_DATE_ROW_HEIGHT)
+            for lane in range(lanes_used):
+                self.grid.setRowMinimumHeight(row_cursor + 1 + lane, CALENDAR_LANE_ROW_HEIGHT)
+
+            # 표처럼 칸끼리 선이 맞닿게, 칸마다 오른쪽/아래 테두리만 그어서 격자를 만듭니다
+            # (둥근 카드 대신 스프레드시트에 가까운 모양 — 요청하신 참고 이미지 스타일).
+            for column, day in enumerate(week):
+                in_month = day.month == self.current_month
+                cell = QLabel(str(day.day))
+                cell.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+                cell.setContentsMargins(6, 4, 0, 0)
+                cell.setStyleSheet(
+                    f"color: {TEXT if in_month else MUTED}; font-weight: 600;"
+                    f"border: 1px solid {BORDER}; background: {CANVAS};"
+                )
+                cell.setCursor(Qt.CursorShape.PointingHandCursor)
+                cell.mousePressEvent = lambda _event, d=day: self.dayClicked.emit(d)
+                self.grid.addWidget(cell, row_cursor, column, 1 + lanes_used, 1)
+                self._day_cells.append(cell)
+
+            for task, seg_start, seg_end, lane, done in placed:
+                col_start = (seg_start - week_start).days
+                span_days = (seg_end - seg_start).days + 1
+                base_color = colors.get(task.id, CALENDAR_CHIP_PALETTE[0])
+                bar = QLabel()
+                if done:
+                    # 완료된 업무는 색을 살짝 바래게 해서 뒤로 물러나 보이게 합니다.
+                    style = (
+                        f"background: {muted_chip_color(base_color)}; color: #4A4A4A;"
+                        "border-radius: 4px; font-weight: 500;"
+                    )
+                else:
+                    # 진행 중인 업무는 원래 색 그대로 + 굵은 글씨 + 왼쪽 강조선으로 확실히 도드라지게 합니다.
+                    style = (
+                        f"background: {base_color}; color: #2B2B2B; font-weight: 700;"
+                        f"border-radius: 4px; border-left: 3px solid {PIN};"
+                    )
+                # 막대 자체는 작게 유지하고, 막대끼리(같은 날 안에서)는 아주 살짝만 띄웁니다.
+                # 대신 날짜 숫자와 첫 막대 사이, 마지막 막대와 칸 아래쪽 사이에는 여유를 넉넉히 둡니다.
+                top_margin = CALENDAR_BAR_OUTER_MARGIN if lane == 0 else CALENDAR_BAR_INNER_MARGIN
+                bottom_margin = (
+                    CALENDAR_BAR_OUTER_MARGIN if lane == uniform_lanes - 1 else CALENDAR_BAR_INNER_MARGIN
+                )
+                bar.setStyleSheet(
+                    f"{style} padding: 0px 6px; font-size: 11px;"
+                    f"margin: {top_margin}px 2px {bottom_margin}px 2px;"
+                )
+                metrics = bar.fontMetrics()
+                bar.setText(metrics.elidedText(task.title, Qt.TextElideMode.ElideRight, 96 * span_days))
+                bar.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.grid.addWidget(bar, row_cursor + 1 + lane, col_start, 1, span_days)
+                bar.raise_()
+                self._day_cells.append(bar)
+
+            row_cursor += 1 + lanes_used
+
+        self.monthRendered.emit()
+
+
+class HistoryDialog(QDialog):
+    """기간을 고르면 그 사이에 완료 처리한 업무를 쭉 보여줍니다."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self.window = window
+        self.setWindowTitle("완료 이력")
+        self.setMinimumSize(640, 500)
+
+        self.calendar_view = CalendarMonthView(window)
+        self.calendar_view.dayClicked.connect(self._jump_to_day)
+        # 달력은 줄이 늘어나도 눌리지 않고 항상 한 번에 다 보여야 하므로, 달력 자체를 스크롤에
+        # 가두지 않고 창을 그만큼 키웁니다. 대신 아래 업무 목록은 자체 스크롤로 넘칩니다.
+        self.calendar_view.monthRendered.connect(self._fit_window_to_calendar)
+
+        self.start_edit = QDateEdit()
+        self.start_edit.setCalendarPopup(True)
+        self.start_edit.setDisplayFormat("yyyy-MM-dd")
+        style_calendar_popup(self.start_edit)
+        self.start_edit.setDate(QDate.currentDate().addDays(-7))
+        self.end_edit = QDateEdit()
+        self.end_edit.setCalendarPopup(True)
+        self.end_edit.setDisplayFormat("yyyy-MM-dd")
+        style_calendar_popup(self.end_edit)
+        self.end_edit.setDate(QDate.currentDate())
+        self.start_edit.dateChanged.connect(self._refresh)
+        self.end_edit.dateChanged.connect(self._refresh)
+
+        range_row = QHBoxLayout()
+        range_row.addWidget(QLabel("시작일"))
+        range_row.addWidget(self.start_edit, 1)
+        range_row.addWidget(QLabel("완료일"))
+        range_row.addWidget(self.end_edit, 1)
+
+        self.result_tree = QTreeWidget()
+        self.result_tree.setHeaderHidden(True)
+        self.result_tree.setIndentation(16)
+        self.result_tree.setMinimumHeight(150)  # adjustSize()가 목록을 너무 눌러버리지 않게 최소 높이 확보
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.calendar_view)
+        layout.addSpacing(12)
+        layout.addLayout(range_row)
+        layout.addWidget(self.result_tree, 1)
+
+        self._refresh()
+        self._fit_window_to_calendar()
+
+    def _fit_window_to_calendar(self) -> None:
+        """달력 줄 수가 바뀌면(월 이동, 연/월 선택) 창 높이를 다시 맞춥니다.
+        달력은 항상 통째로 보이고, 목록 쪽만 스크롤로 넘치게 하려는 목적입니다."""
+        self.calendar_view.updateGeometry()
+        needed = self.layout().totalMinimumSize().height()
+        if self.height() < needed:
+            self.resize(self.width(), needed)
+
+    def _jump_to_day(self, day: date) -> None:
+        """달력 칸을 누르면 그 날 하루로 아래 목록을 좁혀서 보여줍니다."""
+        target = QDate(day.year, day.month, day.day)
+        with QSignalBlocker(self.start_edit):
+            self.start_edit.setDate(target)
+        self.end_edit.setDate(target)  # end_edit의 dateChanged가 _refresh를 한 번만 트리거합니다
+
+    def _tasks_in_range(self, start: date, end: date) -> list[Task]:
+        items = []
+        for task in self.window.tasks:
+            if not task.done or not task.done_at:
+                continue
+            try:
+                done_date = date.fromisoformat(task.done_at[:10])
+            except ValueError:
+                continue
+            if start <= done_date <= end:
+                items.append(task)
+        return sorted(items, key=lambda t: t.done_at)
+
+    def _children_for(self, parent_id: str) -> list[Task]:
+        children = [t for t in self.window.tasks if t.parent_id == parent_id and t.done]
+        return sorted(children, key=lambda t: t.done_at or "")
+
+    @staticmethod
+    def _row_text(task: Task) -> str:
+        stamp = task.done_at[:10] if task.done_at else "?"
+        return f"{stamp}  ·  {task.title}"
+
+    def _refresh(self) -> None:
+        start = self.start_edit.date().toPython()
+        end = self.end_edit.date().toPython()
+        self.result_tree.clear()
+        tasks = self._tasks_in_range(start, end) if start <= end else []
+        in_range_ids = {t.id for t in tasks}
+        # 부모가 이 기간 목록에 없으면(완료 안 됐거나 범위 밖) 하위 업무를 고아로 두지 않고
+        # 최상위처럼 그대로 보여줍니다.
+        top_level = [t for t in tasks if t.parent_id is None or t.parent_id not in in_range_ids]
+        top_level.sort(key=lambda t: t.done_at or "")
+
+        if not top_level:
+            placeholder = QTreeWidgetItem(["이 기간에 완료한 업무가 없습니다."])
+            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.result_tree.addTopLevelItem(placeholder)
+            return
+
+        for task in top_level:
+            row = QTreeWidgetItem([self._row_text(task)])
+            for child in self._children_for(task.id):
+                row.addChild(QTreeWidgetItem([self._row_text(child)]))
+            self.result_tree.addTopLevelItem(row)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -623,6 +1116,7 @@ class MainWindow(QMainWindow):
         self.lists: dict[str, ColumnList] = {}
         self.counters: dict[str, QLabel] = {}
         self.column_wrappers: dict[str, QWidget] = {}
+        self.column_name_labels: dict[str, QLabel] = {}
         self._tbd_expanded_width = 300  # 접었다 펼 때 되돌아갈 폭. 접기 직전 실제 폭으로 매번 갱신됩니다.
 
         self._build_ui()
@@ -645,6 +1139,9 @@ class MainWindow(QMainWindow):
         self.done_toggle = QPushButton("완료 항목 보기")
         self.done_toggle.setCheckable(True)
         self.done_toggle.toggled.connect(self.toggle_done)
+        history_button = QPushButton("📅")
+        history_button.setToolTip("완료 이력 보기 (기간별로 완료한 업무 확인)")
+        history_button.clicked.connect(self.open_history)
         settings_button = QPushButton("⚙")
         settings_button.setToolTip("설정")
         settings_button.clicked.connect(self.open_settings)
@@ -655,6 +1152,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(add_button)
         toolbar.addWidget(self.done_toggle)
         toolbar.addStretch(1)
+        toolbar.addWidget(history_button)
         toolbar.addWidget(settings_button)
         toolbar.addWidget(self.pin_toggle)
         outer.addLayout(toolbar)
@@ -686,14 +1184,15 @@ class MainWindow(QMainWindow):
         with QSignalBlocker(self.done_toggle):
             self.done_toggle.setChecked(bool(self.settings.get("show_done", False)))
         self.show_done = self.done_toggle.isChecked()
-        self.done_toggle.setText("DONE" if self.show_done else "완료 항목 보기")
+        self.done_toggle.setText("TODO목록" if self.show_done else "완료 항목 보기")
+        self._apply_done_label()
+        self.lists[TODO].setDragEnabled(not self.show_done)
+        self.lists[TODO].setAcceptDrops(not self.show_done)
 
         tbd_collapsed = bool(self.settings.get("tbd_collapsed", False))
         with QSignalBlocker(self.collapse_button):
             self.collapse_button.setChecked(tbd_collapsed)
-        self.column_wrappers[TBD].setVisible(not tbd_collapsed)
-        self.expand_button.setVisible(tbd_collapsed)
-        self._apply_collapsed_spacing(tbd_collapsed)
+        self._refresh_tbd_visibility()
 
         always_on_top = bool(self.settings.get("always_on_top", False))
         with QSignalBlocker(self.pin_toggle):
@@ -721,7 +1220,8 @@ class MainWindow(QMainWindow):
             header.addWidget(self.collapse_button)
         name = QLabel(COLUMN_LABEL[column])
         name.setFont(ui_font(12, bold=True))
-        name.setStyleSheet(f"color: {COLUMN_ACCENT[column]};")
+        name.setStyleSheet(f"color: {column_accent(column)};")
+        self.column_name_labels[column] = name
         count = QLabel("0")
         count.setObjectName("count")
         header.addWidget(name)
@@ -766,17 +1266,16 @@ class MainWindow(QMainWindow):
         return len(categories)
 
     def has_children(self, task_id: str) -> bool:
-        return any(t.parent_id == task_id for t in self.tasks)
+        return any(t.parent_id == task_id and not t.archived for t in self.tasks)
 
     def top_level_tasks(self, column: str) -> list[Task]:
-        items = [
-            t for t in self.tasks
-            if t.column == column and t.parent_id is None and (self.show_done or not t.done)
-        ]
+        """완료된 업무도 (지우기 전까지는) 여기 그대로 남아 있습니다 — DONE 화면과 동시에 보입니다.
+        TODO/TBD 화면에서 뺀(archived) 업무만 여기서 사라집니다."""
+        items = [t for t in self.tasks if t.column == column and t.parent_id is None and not t.archived]
         return sorted(items, key=lambda t: (t.done, t.checked, self.category_rank(t), t.order))
 
     def child_tasks(self, parent_id: str) -> list[Task]:
-        items = [t for t in self.tasks if t.parent_id == parent_id and (self.show_done or not t.done)]
+        items = [t for t in self.tasks if t.parent_id == parent_id and not t.archived]
         return sorted(items, key=lambda t: (t.done, t.checked, t.order))
 
     def visible_tasks(self, column: str) -> list[Task]:
@@ -788,6 +1287,36 @@ class MainWindow(QMainWindow):
                 result.extend(self.child_tasks(parent.id))
         return result
 
+    def done_top_level_tasks(self) -> list[Task]:
+        """TODO/TBD 구분 없이, 완료된 최상위 업무를 모읍니다."""
+        items = [t for t in self.tasks if t.done and t.parent_id is None]
+        return sorted(items, key=lambda t: (self.category_rank(t), t.order))
+
+    def done_child_tasks(self, parent_id: str) -> list[Task]:
+        """완료된 업무의 하위 업무 중에서도 완료된 것만 (DONE 화면에는 완료된 것만 보여주므로)."""
+        items = [t for t in self.tasks if t.parent_id == parent_id and t.done]
+        return sorted(items, key=lambda t: t.order)
+
+    def done_tasks(self) -> list[Task]:
+        """TODO 화면과 똑같이, 대주제 다음에 그 하위 업무들이 바로 이어지는 순서로 묶어서 돌려줍니다."""
+        result: list[Task] = []
+        shown_children: set[str] = set()
+        for parent in self.done_top_level_tasks():
+            result.append(parent)
+            children = self.done_child_tasks(parent.id)
+            if children and not parent.collapsed:
+                result.extend(children)
+            shown_children.update(c.id for c in children)
+        # 상위 업무가 완료되지 않았거나(또는 이미 지워졌거나) 해서 위 루프에 안 낀 완료된 하위
+        # 업무는 고아로 남기지 않고 최상위처럼 그대로 보여줍니다.
+        orphans = [
+            t for t in self.tasks
+            if t.done and t.parent_id is not None and t.id not in shown_children
+        ]
+        orphans.sort(key=lambda t: (self.category_rank(t), t.order))
+        result.extend(orphans)
+        return result
+
     def render(self) -> None:
         for column, listing in self.lists.items():
             selected_id = None
@@ -795,11 +1324,14 @@ class MainWindow(QMainWindow):
             if current:
                 selected_id = current.data(ROLE_TASK_ID)
             listing.clear()
-            tasks = self.visible_tasks(column)
+            if self.show_done:
+                tasks = self.done_tasks() if column == TODO else []
+            else:
+                tasks = self.visible_tasks(column)
             for task in tasks:
                 item = QListWidgetItem()
                 item.setData(ROLE_TASK_ID, task.id)
-                item.setData(ROLE_CARD, self._card(task))
+                item.setData(ROLE_CARD, self._card(task, in_done_view=self.show_done))
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
                 listing.addItem(item)
                 if task.id == selected_id:
@@ -808,16 +1340,17 @@ class MainWindow(QMainWindow):
             label = str(len(tasks)) + (f" · 고정 {pinned}" if pinned else "")
             self.counters[column].setText(label)
 
-    def _card(self, task: Task) -> dict:
+    def _card(self, task: Task, in_done_view: bool = False) -> dict:
         parts = []
         if task.category:
             parts.append(f"[{task.category}]")
         parts.append(due_caption(task))
         if task.tags:
             parts.append(" ".join(f"#{t}" for t in task.tags))
-        children = [t for t in self.tasks if t.parent_id == task.id]
+        children = [t for t in self.tasks if t.parent_id == task.id and not t.archived]
         if children:
-            done_children = sum(1 for t in children if t.done)
+            # 체크박스만 눌러도(완료 처리까지는 안 갔어도) "다 했다"는 뜻으로 보고 숫자에 반영합니다.
+            done_children = sum(1 for t in children if t.checked or t.done)
             parts.append(f"하위 {done_children}/{len(children)}")
         return {
             "title": task.title,
@@ -827,7 +1360,8 @@ class MainWindow(QMainWindow):
             "done": task.done,
             "urgency": task_urgency(task),
             "indent": 1 if task.parent_id else 0,
-            "has_children": bool(children),
+            # DONE 화면에서는 완료된 하위 업무만 그 아래 나오니, 화살표도 완료된 하위가 있을 때만 보여줍니다.
+            "has_children": bool(self.done_child_tasks(task.id)) if in_done_view else bool(children),
             "collapsed": task.collapsed,
         }
 
@@ -951,8 +1485,33 @@ class MainWindow(QMainWindow):
 
     def toggle_done(self, checked: bool) -> None:
         self.show_done = checked
-        self.done_toggle.setText("DONE" if checked else "완료 항목 보기")
+        self.done_toggle.setText("TODO목록" if checked else "완료 항목 보기")
+        self._apply_done_label()
+        self.lists[TODO].setDragEnabled(not checked)
+        self.lists[TODO].setAcceptDrops(not checked)
+        self._refresh_tbd_visibility()
         self.render()
+
+    def _apply_done_label(self) -> None:
+        """DONE 화면을 보는 동안은 TODO 칸 이름 자체가 'DONE'으로 바뀌고, TBD는 숨겨져서
+        완료된 업무를 TODO/TBD 구분 없이 한 목록으로 봅니다."""
+        label = self.column_name_labels[TODO]
+        if self.show_done:
+            label.setText("DONE")
+            label.setStyleSheet(f"color: {DONE_GREEN};")
+        else:
+            label.setText(COLUMN_LABEL[TODO])
+            label.setStyleSheet(f"color: {column_accent(TODO)};")
+
+    def _refresh_tbd_visibility(self) -> None:
+        """DONE 화면을 보는 동안에는 TBD를 항상 숨깁니다. DONE 화면을 벗어나면 사용자가 직접
+        접어둔 상태(collapse_button)로 되돌립니다. 여기서는 창 크기를 바꾸지 않습니다 —
+        DONE 보기를 켰다 껐다 할 때마다 창이 들썩이지 않게 하기 위해서입니다."""
+        visible = not self.show_done and not self.collapse_button.isChecked()
+        self.column_wrappers[TBD].setVisible(visible)
+        self.expand_button.setVisible((not visible) and not self.show_done)
+        self._apply_collapsed_spacing(not visible)
+        self.board.activate()
 
     def _apply_collapsed_spacing(self, collapsed: bool) -> None:
         """접었을 때는 TODO와 TBD 사이 간격만 없앱니다. 창 오른쪽 여백은 왼쪽과 똑같이
@@ -1004,7 +1563,25 @@ class MainWindow(QMainWindow):
 
     def delete_task(self, task: Task) -> None:
         children = [t for t in self.tasks if t.parent_id == task.id]
-        message = f"'{task.title}'을(를) 지울까요?"
+        if task.done and not self.show_done:
+            # TODO/TBD 화면에서 완료된 카드를 지우는 경우: 완전히 지우지 않고 그 화면에서만 뺍니다.
+            # DONE 화면·완료 이력에서는 계속 볼 수 있습니다.
+            message = f"'{task.title}'을(를) 목록에서 뺄까요? DONE 화면·완료 이력에서는 계속 확인할 수 있습니다."
+            answer = QMessageBox.question(self, "목록에서 빼기", message)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            task.archived = True
+            for child in children:
+                child.archived = True
+            self.persist()
+            self.render()
+            return
+
+        message = (
+            f"'{task.title}'을(를) 완전히 지울까요? 완료 이력에서도 사라집니다."
+            if task.done
+            else f"'{task.title}'을(를) 지울까요?"
+        )
         if children:
             message += f" 하위 업무 {len(children)}개도 함께 지워집니다."
         answer = QMessageBox.question(self, "삭제", message)
@@ -1044,6 +1621,9 @@ class MainWindow(QMainWindow):
 
     def set_done(self, task: Task, done: bool) -> None:
         task.done = done
+        task.done_at = datetime.now().isoformat(timespec="seconds") if done else None
+        if not done:
+            task.archived = False  # 완료를 취소하면 다시 TODO/TBD 화면에 보여야 합니다
         self.persist()
         self.render()
 
@@ -1056,7 +1636,7 @@ class MainWindow(QMainWindow):
         task = self.find(task_id)
         if task is None:
             return
-        self.set_checked(task, not task.checked)
+        self.set_done(task, not task.done)
 
     def on_task_complete_requested(self, task_id: str) -> None:
         task = self.find(task_id)
@@ -1073,6 +1653,19 @@ class MainWindow(QMainWindow):
     def open_settings(self) -> None:
         dialog = SettingsDialog(self)
         dialog.exec()
+        self.render()
+
+    def open_history(self) -> None:
+        dialog = HistoryDialog(self)
+        dialog.exec()
+
+    def apply_theme(self, name: str) -> None:
+        apply_theme(name)
+        QApplication.instance().setStyleSheet(app_stylesheet())
+        self._apply_done_label()
+        self.column_name_labels[TBD].setStyleSheet(f"color: {column_accent(TBD)};")
+        self.settings["theme"] = CURRENT_THEME
+        storage.save_settings(self.settings)
         self.render()
 
     def persist(self) -> None:
@@ -1094,6 +1687,7 @@ def run() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("TodoTBD")
     app.setFont(ui_font(10))
+    apply_theme(storage.load_settings().get("theme", CURRENT_THEME))
     app.setStyleSheet(app_stylesheet())
     window = MainWindow()
     window.show()
