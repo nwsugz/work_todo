@@ -5,7 +5,7 @@ from __future__ import annotations
 import calendar as calendar_module
 import copy
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from PySide6.QtCore import QDate, QPoint, QPointF, QRect, QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtGui import (
@@ -176,6 +176,15 @@ def ui_font(size: int = 10, bold: bool = False) -> QFont:
     font = QFont("Malgun Gothic" if sys.platform == "win32" else "Noto Sans CJK KR", size)
     font.setBold(bold)
     return font
+
+
+class NoWheelDateEdit(QDateEdit):
+    """마우스 휠에 반응하지 않는 QDateEdit. 다이얼로그 안에서 스크롤하려다 커서가
+    날짜 칸 위에 있으면 그 칸의 날짜 숫자가 휠에 맞춰 계속 늘어나 버리는 문제가
+    있어서, 이 위젯은 휠 이벤트를 아예 무시합니다(클릭/키보드 편집은 그대로 됩니다)."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
 
 
 def style_calendar_popup(date_edit: QDateEdit) -> None:
@@ -604,7 +613,7 @@ class TaskDialog(QDialog):
         if task and task.category in categories:
             self.category_combo.setCurrentIndex(categories.index(task.category) + 1)
 
-        self.start_edit = QDateEdit()
+        self.start_edit = NoWheelDateEdit()
         self.start_edit.setCalendarPopup(True)
         self.start_edit.setDisplayFormat("yyyy-MM-dd")
         style_calendar_popup(self.start_edit)
@@ -616,7 +625,7 @@ class TaskDialog(QDialog):
             self.start_edit.setDate(QDate.currentDate())  # 새 업무는 지금 등록하는 날짜가 기본값
 
         self.no_due = QCheckBox("마감일 없음")
-        self.due_edit = QDateEdit()
+        self.due_edit = NoWheelDateEdit()
         self.due_edit.setCalendarPopup(True)
         self.due_edit.setDisplayFormat("yyyy-MM-dd")
         style_calendar_popup(self.due_edit)
@@ -789,8 +798,8 @@ CALENDAR_CHIP_PALETTE = [
 WEEKDAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"]
 CALENDAR_MAX_LANES = 3  # 한 주에 동시에 겹쳐 보여줄 수 있는 색상줄 최대 개수
 CALENDAR_DATE_ROW_HEIGHT = 26   # 날짜 숫자만 있는 줄의 최소 높이
-CALENDAR_LANE_ROW_HEIGHT = 34   # 막대 한 줄의 최소 높이(여백 포함)
-CALENDAR_BAR_OUTER_MARGIN = 6   # 날짜 숫자~첫 막대, 마지막 막대~칸 아래쪽 사이의 여유
+CALENDAR_LANE_ROW_HEIGHT = 22   # 막대 한 줄의 최소 높이(여백 포함)
+CALENDAR_BAR_OUTER_MARGIN = 4   # 날짜 숫자~첫 막대, 마지막 막대~칸 아래쪽 사이의 여유
 CALENDAR_BAR_INNER_MARGIN = 1   # 막대와 막대 사이의 아주 살짝만 남기는 간격
 
 
@@ -945,6 +954,22 @@ class CalendarMonthView(QWidget):
             spans.append((task, start, end, task.done))
         return spans
 
+    def _global_max_lanes(self) -> int:
+        """전체 업무를 통틀어 동시에 겹치는 최대 개수. 달마다 겹치는 업무 수가 달라서
+        칸 높이(줄 수)가 이 달 저 달 다르게 보이는 문제가 있어, 특정 달이 아니라
+        가진 업무 전체를 기준으로 계산해 모든 달이 항상 같은 줄 수를 쓰게 합니다."""
+        events: list[tuple[date, int]] = []
+        for _task, start, end, _done in self._task_spans():
+            events.append((start, 1))
+            events.append((end + timedelta(days=1), -1))
+        events.sort(key=lambda e: (e[0], e[1]))
+        running = 0
+        peak = 0
+        for _day, delta in events:
+            running += delta
+            peak = max(peak, running)
+        return peak
+
     def _render_month(self) -> None:
         self.year_button.setText(f"{self.current_year}년")
         self.month_button.setText(f"{self.current_month}월")
@@ -1001,9 +1026,10 @@ class CalendarMonthView(QWidget):
             lanes_used = max((p[3] for p in placed), default=-1) + 1
             week_plans.append((week, placed, max(lanes_used, 1)))
 
-        # 주마다 칸 높이가 다르면 마지막 줄처럼 유독 좁아 보이는 주가 생기므로, 이번 달에서
-        # 가장 많이 겹치는 주를 기준으로 모든 주가 같은 줄 수(=같은 칸 크기)를 쓰게 맞춥니다.
-        uniform_lanes = max((lp[2] for lp in week_plans), default=1)
+        # 주마다, 그리고 달마다 칸 높이가 다르면 들쭉날쭉해 보이므로, 이 달에서 가장 많이
+        # 겹치는 주가 아니라 가진 업무 전체를 통틀어 가장 많이 겹치는 경우를 기준으로 모든
+        # 주·모든 달이 항상 같은 줄 수(=같은 칸 크기)를 쓰게 맞춥니다.
+        uniform_lanes = max(1, min(self._global_max_lanes(), CALENDAR_MAX_LANES))
 
         row_cursor = 1  # 0번 행은 요일 헤더
         for week, placed, _week_lanes in week_plans:
@@ -1115,12 +1141,12 @@ class HistoryDialog(QDialog):
         # 가두지 않고 창을 그만큼 키웁니다. 대신 아래 업무 목록은 자체 스크롤로 넘칩니다.
         self.calendar_view.monthRendered.connect(self._fit_window_to_calendar)
 
-        self.start_edit = QDateEdit()
+        self.start_edit = NoWheelDateEdit()
         self.start_edit.setCalendarPopup(True)
         self.start_edit.setDisplayFormat("yyyy-MM-dd")
         style_calendar_popup(self.start_edit)
         self.start_edit.setDate(QDate.currentDate().addDays(-7))
-        self.end_edit = QDateEdit()
+        self.end_edit = NoWheelDateEdit()
         self.end_edit.setCalendarPopup(True)
         self.end_edit.setDisplayFormat("yyyy-MM-dd")
         style_calendar_popup(self.end_edit)
@@ -1147,6 +1173,12 @@ class HistoryDialog(QDialog):
 
         self._refresh()
         self._fit_window_to_calendar()
+
+    def refresh_all(self) -> None:
+        """TODO 화면에서 업무를 추가/수정하는 동안 이 창을 열어 둔 채로 있어도 곧바로
+        반영되도록, 달력과 아래 목록을 둘 다 다시 그립니다."""
+        self.calendar_view._render_month()
+        self._refresh()
 
     def _fit_window_to_calendar(self) -> None:
         """달력 줄 수가 바뀌면(월 이동, 연/월 선택) 창 높이를 다시 맞춥니다.
@@ -1452,6 +1484,16 @@ class MainWindow(QMainWindow):
             pinned = sum(1 for t in tasks if t.pinned)
             label = str(len(tasks)) + (f" · 고정 {pinned}" if pinned else "")
             self.counters[column].setText(label)
+
+        # 완료 이력 창을 비모달로 열어 둔 채 TODO에서 업무를 추가/수정할 수 있게
+        # 되면서, 그 창도 곧바로 최신 내용을 보여줘야 합니다.
+        history = getattr(self, "_history_dialog", None)
+        if history is not None:
+            try:
+                if history.isVisible():
+                    history.refresh_all()
+            except RuntimeError:
+                pass  # 창이 이미 닫혀서 C++ 쪽 객체가 사라진 경우
 
     def _card(self, task: Task, in_done_view: bool = False) -> dict:
         parts = []
