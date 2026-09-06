@@ -224,18 +224,20 @@ def _apply_date_colors(calendar: QCalendarWidget) -> None:
     """지금 보이는 달의 날짜 칸마다 알맞은 색을 다시 계산해서 넣습니다.
     - setWeekdayTextFormat()은 요일 헤더 글자뿐 아니라 그 요일 날짜 칸까지 같이
       색이 입혀지므로, 헤더에만 색이 남게 주말 날짜는 평소 색으로 되돌립니다.
-    - 지난달/다음달로 넘어간 날짜는 옅은 색으로 구분되게 합니다.
-    - 오늘 날짜는 밑줄로 표시합니다.
+    - 지난달/다음달로 넘어간 날짜는 이번 달보다 눈에 띄게 어둡혀서 구분합니다.
+    - 오늘 날짜는 볼드로 표시합니다(밑줄은 눈에 잘 안 띈다는 의견이 있어 빼고 볼드로 교체).
+      이번 달 날짜는 볼드로 안 하고 색으로만 구분해서, 오늘 날짜의 볼드가 묻히지 않게 합니다.
     """
     year, month = calendar.yearShown(), calendar.monthShown()
     weeks = calendar_module.Calendar(firstweekday=6).monthdatescalendar(year, month)
     today = date.today()
+    faded = QColor(MUTED).darker(135)
     for week in weeks:
         for day in week:
             fmt = QTextCharFormat()
-            fmt.setForeground(QColor(TEXT if day.month == month else MUTED))
+            fmt.setForeground(QColor(TEXT) if day.month == month else faded)
             if day == today:
-                fmt.setFontUnderline(True)
+                fmt.setFontWeight(QFont.Weight.Bold)
             calendar.setDateTextFormat(QDate(day.year, day.month, day.day), fmt)
 
 
@@ -260,7 +262,8 @@ def _trim_trailing_week_row(calendar: QCalendarWidget) -> None:
 
 
 def _fix_calendar_navigation_bar(calendar: QCalendarWidget) -> None:
-    """'9월 2026년' 순서로 나오던 걸 '2026년 9월' 순서로 바꿉니다."""
+    """'9월 2026년' 순서로 나오던 걸 '2026년 9월' 순서로 바꾸고, 연도를 직접 입력하는
+    스핀박스가 잘려 보이던 것도 폭·높이를 넉넉히 줘서 고칩니다."""
     navbar = calendar.findChild(QWidget, "qt_calendar_navigationbar")
     if navbar is None or navbar.layout() is None:
         return
@@ -272,6 +275,17 @@ def _fix_calendar_navigation_bar(calendar: QCalendarWidget) -> None:
     month_index = layout.indexOf(month_button)
     layout.removeWidget(year_button)
     layout.insertWidget(month_index, year_button)
+
+    def _fix_year_edit() -> None:
+        # qt_calendar_yearedit는 연도 버튼을 눌러야 그 순간 생기는 위젯이라, 미리
+        # 찾아서 크기를 정해봐야 아직 없어서 효과가 없습니다. 버튼을 누른 다음에
+        # (Qt가 스핀박스를 만든 뒤에) 찾아서 크기를 키웁니다.
+        year_edit = navbar.findChild(QSpinBox, "qt_calendar_yearedit")
+        if year_edit is not None:
+            year_edit.setMinimumWidth(90)
+            year_edit.setMinimumHeight(28)
+
+    year_button.clicked.connect(_fix_year_edit)
 
 
 def style_calendar_popup(date_edit: QDateEdit) -> None:
