@@ -12,11 +12,13 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt pyinstaller
 
 pyinstaller --noconfirm --clean ^
-  --name "TodoTBD" ^
+  --name "Taskit" ^
   --windowed ^
   --onefile ^
+  --icon app\assets\icon.ico ^
+  --add-data "app\assets;app\assets" ^
   main.py
 
 echo.
-echo 완성: dist\TodoTBD.exe
+echo 완성: dist\Taskit.exe
 endlocal
