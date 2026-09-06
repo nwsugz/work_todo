@@ -70,42 +70,42 @@ UNDO_STACK_LIMIT = 50  # Ctrl+Z로 되돌릴 수 있는 최대 단계 수
 # 바꾸면, 이미 정의된 함수들도 다음 호출부터 새 색을 그대로 씁니다(파이썬 전역 조회 특성).
 THEMES: dict[str, dict[str, str]] = {
     "dark": {
-        "CANVAS": "#191919",
-        "SURFACE": "#2B2B2B",
-        "SURFACE_HOVER": "#363636",
-        "SELECTED_BG": "#3A3A3A",
-        "BORDER": "#3D3D3D",
-        "TEXT": "#E9E9E7",
-        "MUTED": "#9B9A97",
-        "AMBER": "#D9A441",
-        "SLATE": "#8B8B88",
-        "PIN": "#5B9BD9",
-        "DONE_GREEN": "#3FA172",
-        "URGENT_OVERDUE": "#E0555A",
-        "URGENT_OVERDUE_BG": "#3A2426",
-        "URGENT_SOON": "#D98A3D",
-        "URGENT_SOON_BG": "#332A20",
-        "PRIMARY_BG": "#D9A441",
-        "PRIMARY_TEXT": "#191919",
+        "CANVAS": "#262624",
+        "SURFACE": "#30302D",
+        "SURFACE_HOVER": "#3A3936",
+        "SELECTED_BG": "#403F3B",
+        "BORDER": "#45443F",
+        "TEXT": "#F1EFE8",
+        "MUTED": "#9C988D",
+        "AMBER": "#D97757",
+        "SLATE": "#9C9686",
+        "PIN": "#7AA6D9",
+        "DONE_GREEN": "#7FA36B",
+        "URGENT_OVERDUE": "#E0685A",
+        "URGENT_OVERDUE_BG": "#3D2B26",
+        "URGENT_SOON": "#D99552",
+        "URGENT_SOON_BG": "#3A2F22",
+        "PRIMARY_BG": "#CC785C",
+        "PRIMARY_TEXT": "#FFFFFF",
     },
     "light": {
-        "CANVAS": "#FFFFFF",
-        "SURFACE": "#F7F6F3",
-        "SURFACE_HOVER": "#EDECE9",
-        "SELECTED_BG": "#E3E2DF",
-        "BORDER": "#E3E2E0",
-        "TEXT": "#37352F",
-        "MUTED": "#9B9A97",
-        "AMBER": "#C9791A",
-        "SLATE": "#6B6B68",
-        "PIN": "#2383E2",
-        "DONE_GREEN": "#2F9E64",
-        "URGENT_OVERDUE": "#E03E3E",
-        "URGENT_OVERDUE_BG": "#FBEAEA",
-        "URGENT_SOON": "#D9730D",
-        "URGENT_SOON_BG": "#FBF0E4",
-        "PRIMARY_BG": "#D9A441",
-        "PRIMARY_TEXT": "#191919",
+        "CANVAS": "#FAF9F5",
+        "SURFACE": "#F0EEE6",
+        "SURFACE_HOVER": "#E8E4D9",
+        "SELECTED_BG": "#E5E0D3",
+        "BORDER": "#DFDBCF",
+        "TEXT": "#3D3929",
+        "MUTED": "#87837A",
+        "AMBER": "#CC785C",
+        "SLATE": "#8A8677",
+        "PIN": "#5B8DBE",
+        "DONE_GREEN": "#6A9155",
+        "URGENT_OVERDUE": "#C4534A",
+        "URGENT_OVERDUE_BG": "#F5E6E0",
+        "URGENT_SOON": "#B8802E",
+        "URGENT_SOON_BG": "#F3ECDD",
+        "PRIMARY_BG": "#CC785C",
+        "PRIMARY_TEXT": "#FFFFFF",
     },
 }
 
@@ -135,8 +135,8 @@ def column_accent(column: str) -> str:
     return AMBER if column == TODO else SLATE
 
 TBD_COLLAPSE_BUTTON_WIDTH = 22
-BOARD_SPACING = 14         # TODO/TBD 두 칸 사이 간격(펼쳐졌을 때)
-OUTER_RIGHT_MARGIN = 16    # 창 오른쪽 여백(펼쳐졌을 때)
+BOARD_SPACING = 18         # TODO/TBD 두 칸 사이 간격(펼쳐졌을 때)
+OUTER_RIGHT_MARGIN = 20    # 창 오른쪽 여백(펼쳐졌을 때)
 
 CHECK_SIZE = 16
 CHEVRON_SIZE = 13
@@ -362,31 +362,46 @@ def app_stylesheet() -> str:
     QLabel {{ color: {TEXT}; background: transparent; }}
     QLabel#count {{ color: {MUTED}; font-size: 12px; }}
     QPushButton {{
-        background: transparent; border: 1px solid transparent; border-radius: 6px;
-        padding: 6px 12px; color: {TEXT};
+        background: transparent; border: 1px solid transparent; border-radius: 9px;
+        padding: 7px 14px; color: {TEXT}; font-weight: 500;
     }}
     QPushButton:hover {{ background: {SURFACE_HOVER}; }}
+    QPushButton:pressed {{ background: {SELECTED_BG}; }}
     QPushButton:checked {{ background: {SURFACE_HOVER}; color: {PIN}; }}
-    QPushButton#primary {{ background: {PRIMARY_BG}; color: {PRIMARY_TEXT}; font-weight: 600; }}
+    QPushButton#primary {{ background: {PRIMARY_BG}; color: {PRIMARY_TEXT}; font-weight: 600; border: 1px solid {PRIMARY_BG}; }}
     QPushButton#primary:hover {{ background: {PRIMARY_BG}; }}
     QPushButton#collapseToggle {{ padding: 2px; border: none; }}
     QPushButton#doneToggle {{ background: {SURFACE_HOVER}; }}
     QPushButton#doneToggle:hover {{ background: {SELECTED_BG}; }}
     QPushButton#doneToggle:checked {{ background: {SURFACE_HOVER}; color: {AMBER}; }}
+    QPushButton#iconButton {{
+        padding: 0px; font-size: 15px; border-radius: 9px; border: 1px solid transparent;
+    }}
+    QPushButton#iconButton:checked {{ background: {SELECTED_BG}; border: 1px solid {BORDER}; }}
     QListWidget {{
-        background: transparent; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px;
+        background: transparent; border: 1px solid {BORDER}; border-radius: 12px; padding: 4px;
     }}
     QListWidget::item {{ border: none; padding: 4px; }}
     QListWidget::item:selected {{ background: {SELECTED_BG}; color: {TEXT}; }}
     QListWidget::item:selected:!active {{ background: {SELECTED_BG}; color: {TEXT}; }}
     QTreeWidget {{
-        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; color: {TEXT};
+        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 12px; color: {TEXT};
     }}
-    QTreeWidget::item {{ padding: 4px; }}
+    QTreeWidget::item {{ padding: 5px; }}
     QTreeWidget::item:selected {{ background: {SELECTED_BG}; color: {TEXT}; }}
     QLineEdit, QPlainTextEdit, QDateEdit {{
-        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px;
-        padding: 6px 8px; color: {TEXT};
+        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 9px;
+        padding: 7px 10px; color: {TEXT};
+    }}
+    QLineEdit:focus, QPlainTextEdit:focus, QDateEdit:focus {{ border: 1px solid {AMBER}; }}
+    QComboBox {{
+        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 9px;
+        padding: 7px 10px; color: {TEXT};
+    }}
+    QComboBox QAbstractItemView {{
+        background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER};
+        selection-background-color: {SELECTED_BG}; selection-color: {TEXT};
+        outline: none;
     }}
     QDialog {{ background: {CANVAS}; }}
     QCalendarWidget QWidget {{ background: {SURFACE}; color: {TEXT}; }}
@@ -443,9 +458,16 @@ class CardDelegate(QStyledItemDelegate):
             border_color, border_width = QColor(BORDER), 1.0
         if selected and urgency:
             background = background.lighter(115)
+
+        # 아주 옅은 그림자를 살짝 아래로 깔아서 카드가 배경 위에 얹혀 있는 느낌을 줍니다
+        # (완전히 납작한 시제품 느낌 대신, 은은한 입체감).
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 22))
+        painter.drawRoundedRect(rect.translated(0, 2), 10, 10)
+
         painter.setPen(QPen(border_color, border_width))
         painter.setBrush(background)
-        painter.drawRoundedRect(rect, 6, 6)
+        painter.drawRoundedRect(rect, 10, 10)
 
         if card.get("has_children"):
             painter.setFont(ui_font(9))
@@ -832,7 +854,7 @@ class SettingsDialog(QDialog):
         category_frame = QFrame()
         category_frame.setObjectName("categoryFrame")
         category_frame.setStyleSheet(
-            f"QFrame#categoryFrame {{ border: 1px solid {BORDER}; border-radius: 8px; background: transparent; }}"
+            f"QFrame#categoryFrame {{ border: 1px solid {BORDER}; border-radius: 12px; background: transparent; }}"
         )
         category_frame_layout = QVBoxLayout(category_frame)
         category_frame_layout.setContentsMargins(8, 8, 8, 8)
@@ -1387,8 +1409,8 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         outer = QVBoxLayout(central)
-        outer.setContentsMargins(16, 14, OUTER_RIGHT_MARGIN, 10)
-        outer.setSpacing(12)
+        outer.setContentsMargins(20, 18, OUTER_RIGHT_MARGIN, 16)
+        outer.setSpacing(14)
 
         toolbar = QHBoxLayout()
         toolbar.setSpacing(8)
@@ -1400,12 +1422,18 @@ class MainWindow(QMainWindow):
         self.done_toggle.setCheckable(True)
         self.done_toggle.toggled.connect(self.toggle_done)
         history_button = QPushButton("📅")
+        history_button.setObjectName("iconButton")
+        history_button.setFixedSize(34, 34)
         history_button.setToolTip("업무 이력 보기 (기간별로 완료한 업무 확인)")
         history_button.clicked.connect(self.open_history)
         settings_button = QPushButton("⚙")
+        settings_button.setObjectName("iconButton")
+        settings_button.setFixedSize(34, 34)
         settings_button.setToolTip("설정")
         settings_button.clicked.connect(self.open_settings)
         self.pin_toggle = QPushButton("📌")
+        self.pin_toggle.setObjectName("iconButton")
+        self.pin_toggle.setFixedSize(34, 34)
         self.pin_toggle.setCheckable(True)
         self.pin_toggle.setToolTip("항상 위 (다른 창을 띄워도 이 창이 뒤로 가지 않습니다. Ctrl+T)")
         self.pin_toggle.toggled.connect(self.toggle_always_on_top)
