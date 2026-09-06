@@ -7,7 +7,7 @@ import copy
 import sys
 from datetime import date, datetime, timedelta
 
-from PySide6.QtCore import QDate, QPoint, QPointF, QRect, QSignalBlocker, QSize, Qt, Signal
+from PySide6.QtCore import QDate, QEvent, QPoint, QPointF, QRect, QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -47,6 +48,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QTableView,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -190,23 +192,75 @@ class NoWheelDateEdit(QDateEdit):
         event.ignore()
 
 
-def _reset_weekend_date_colors(calendar: QCalendarWidget) -> None:
-    """setWeekdayTextFormat()은 요일 헤더 글자뿐 아니라 그 요일에 해당하는 날짜 칸까지
-    같이 색이 입혀집니다. 요일 헤더(일/토)만 색을 넣고 싶어서, 지금 보이는 달의 주말
-    날짜 칸은 다시 평소 글자색으로 되돌립니다."""
-    normal = QTextCharFormat()
-    normal.setForeground(QColor(TEXT))
+class _CalendarHeaderLine(QFrame):
+    """요일 줄(일월화수목금토)과 날짜 칸 사이에 그어 두는 얇은 구분선. QCalendarWidget은
+    이 요일 줄을 진짜 QHeaderView가 아니라 표의 0번째 '행'으로 직접 그리기 때문에(그 QHeaderView는
+    숨겨져 있고 실제로는 안 쓰입니다), QSS로 그 행에 테두리를 넣을 방법이 없어 이렇게 표
+    위에 겹쳐 그리는 얇은 선 위젯을 직접 올려 뒀습니다."""
+
+    def __init__(self, table: QTableView) -> None:
+        super().__init__(table.viewport())
+        self._table = table
+        self.setFixedHeight(1)
+        self.setStyleSheet(f"background: {BORDER};")
+        table.viewport().installEventFilter(self)
+        self.reposition()
+        self.show()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self._table.viewport() and event.type() in (
+            QEvent.Type.Resize,
+            QEvent.Type.Show,
+        ):
+            self.reposition()
+        return False
+
+    def reposition(self) -> None:
+        self.setGeometry(0, self._table.rowHeight(0), self._table.viewport().width(), 1)
+        self.raise_()
+
+
+def _apply_date_colors(calendar: QCalendarWidget) -> None:
+    """지금 보이는 달의 날짜 칸마다 알맞은 색을 다시 계산해서 넣습니다.
+    - setWeekdayTextFormat()은 요일 헤더 글자뿐 아니라 그 요일 날짜 칸까지 같이
+      색이 입혀지므로, 헤더에만 색이 남게 주말 날짜는 평소 색으로 되돌립니다.
+    - 지난달/다음달로 넘어간 날짜는 옅은 색으로 구분되게 합니다.
+    - 오늘 날짜는 밑줄로 표시합니다.
+    """
     year, month = calendar.yearShown(), calendar.monthShown()
-    day = QDate(year, month, 1)
-    while day.month() == month:
-        if day.dayOfWeek() in (6, 7):  # Qt.DayOfWeek: 토요일=6, 일요일=7
-            calendar.setDateTextFormat(day, normal)
-        day = day.addDays(1)
+    weeks = calendar_module.Calendar(firstweekday=6).monthdatescalendar(year, month)
+    today = date.today()
+    for week in weeks:
+        for day in week:
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(TEXT if day.month == month else MUTED))
+            if day == today:
+                fmt.setFontUnderline(True)
+            calendar.setDateTextFormat(QDate(day.year, day.month, day.day), fmt)
+
+
+def _trim_trailing_week_row(calendar: QCalendarWidget) -> None:
+    """QCalendarWidget은 이번 달을 5줄로 다 보여줄 수 있어도 항상 6줄을 그려서, 다음 달
+    날짜로만 채워진 불필요한 마지막 줄이 하나 더 보이곤 합니다. 그 줄이 필요 없으면
+    높이를 0으로 줄여 숨기고, 필요한 달(6줄이 실제로 꽉 차는 달)에서는 다시 보여줍니다.
+    행 높이가 전부 Stretch 모드라 setRowHeight()만으로는 안 먹혀서(최소 section
+    크기에 걸려 그대로 있었음), 세로 헤더의 최소 크기와 리사이즈 모드를 직접 바꿉니다."""
+    table = calendar.findChild(QTableView, "qt_calendar_calendarview")
+    if table is None:
+        return
+    year, month = calendar.yearShown(), calendar.monthShown()
+    needed = len(calendar_module.Calendar(firstweekday=6).monthdatescalendar(year, month))
+    vheader = table.verticalHeader()
+    vheader.setMinimumSectionSize(0)
+    if needed >= 6:
+        vheader.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+    else:
+        vheader.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
+        vheader.resizeSection(6, 0)
 
 
 def _fix_calendar_navigation_bar(calendar: QCalendarWidget) -> None:
-    """'9월 2026년' 순서로 나오던 걸 '2026년 9월' 순서로 바꾸고, 연도를 직접 입력하는
-    스핀박스가 잘려 보이던 것도 폭을 넉넉히 줘서 고칩니다."""
+    """'9월 2026년' 순서로 나오던 걸 '2026년 9월' 순서로 바꿉니다."""
     navbar = calendar.findChild(QWidget, "qt_calendar_navigationbar")
     if navbar is None or navbar.layout() is None:
         return
@@ -218,9 +272,6 @@ def _fix_calendar_navigation_bar(calendar: QCalendarWidget) -> None:
     month_index = layout.indexOf(month_button)
     layout.removeWidget(year_button)
     layout.insertWidget(month_index, year_button)
-    year_edit = navbar.findChild(QSpinBox, "qt_calendar_yearedit")
-    if year_edit is not None:
-        year_edit.setMinimumWidth(70)
 
 
 def style_calendar_popup(date_edit: QDateEdit) -> None:
@@ -239,10 +290,19 @@ def style_calendar_popup(date_edit: QDateEdit) -> None:
     saturday_format.setForeground(QColor(weekday_text_color(6)))
     calendar.setWeekdayTextFormat(Qt.DayOfWeek.Sunday, sunday_format)
     calendar.setWeekdayTextFormat(Qt.DayOfWeek.Saturday, saturday_format)
-    _reset_weekend_date_colors(calendar)
-    calendar.currentPageChanged.connect(lambda _y, _m: _reset_weekend_date_colors(calendar))
+
+    def _refresh(*_args) -> None:
+        _apply_date_colors(calendar)
+        _trim_trailing_week_row(calendar)
+
+    _refresh()
+    calendar.currentPageChanged.connect(_refresh)
 
     _fix_calendar_navigation_bar(calendar)
+
+    table = calendar.findChild(QTableView, "qt_calendar_calendarview")
+    if table is not None:
+        _CalendarHeaderLine(table)
 
 
 def due_caption(task: Task, today: date | None = None) -> str:
