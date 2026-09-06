@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar as calendar_module
 import copy
+import os
 import sys
 from datetime import date, datetime, timedelta
 
@@ -14,6 +15,7 @@ from PySide6.QtGui import (
     QDrag,
     QFont,
     QFontMetrics,
+    QIcon,
     QKeySequence,
     QPainter,
     QPen,
@@ -1361,7 +1363,7 @@ class HistoryDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Work TODO")
+        self.setWindowTitle("Taskit")
         self.resize(880, 620)
 
         self.tasks: list[Task] = storage.load_tasks()
@@ -2047,9 +2049,19 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+def _icon_path() -> str:
+    """아이콘 파일 경로. exe로 묶였을 때(PyInstaller)는 실행 파일 안 임시 폴더
+    (sys._MEIPASS)에서, 소스로 실행할 때는 이 파일 기준 상대 경로에서 찾습니다."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, "app", "assets", "icon.png")
+
+
 def run() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("TodoTBD")
+    app.setApplicationName("Taskit")
+    icon_path = _icon_path()
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     app.setFont(ui_font(10))
     apply_theme(storage.load_settings().get("theme", CURRENT_THEME))
     app.setStyleSheet(app_stylesheet())

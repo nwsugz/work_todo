@@ -24,17 +24,17 @@ jobs:
           pip install -r requirements.txt pyinstaller
 
       - name: 실행 파일 빌드
-        run: pyinstaller --noconfirm --clean --name TodoTBD --windowed --onefile main.py
+        run: pyinstaller --noconfirm --clean --name Taskit --windowed --onefile --icon app/assets/icon.ico --add-data "app/assets;app/assets" main.py
 
       - name: 아티팩트 업로드
         uses: actions/upload-artifact@v4
         with:
-          name: TodoTBD-windows
-          path: dist/TodoTBD.exe
+          name: Taskit-windows
+          path: dist/Taskit.exe
 
       - name: 릴리스에 첨부
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/TodoTBD.exe
+          files: dist/Taskit.exe
           generate_release_notes: true
