@@ -720,6 +720,7 @@ class TaskDialog(QDialog):
         super().__init__(None)
         self.setWindowTitle("업무 편집" if task else "새 업무")
         self.setMinimumWidth(400)
+        apply_dark_titlebar(self, CURRENT_THEME != "light")
         categories = categories or []
 
         self.title_edit = QLineEdit(task.title if task else "")
@@ -808,6 +809,7 @@ class SettingsDialog(QDialog):
         self.window = window
         self.setWindowTitle("설정")
         self.setMinimumWidth(360)
+        apply_dark_titlebar(self, CURRENT_THEME != "light")
 
         theme_label = QLabel("테마")
         self.light_button = QPushButton("☀ 라이트")
@@ -873,6 +875,7 @@ class SettingsDialog(QDialog):
         self.light_button.setChecked(name == "light")
         self.dark_button.setChecked(name != "light")
         self.window.apply_theme(name)
+        apply_dark_titlebar(self, name != "light")
 
     def _category_names(self) -> list[str]:
         return [self.category_list.item(i).text() for i in range(self.category_list.count())]
@@ -1253,6 +1256,7 @@ class HistoryDialog(QDialog):
         self.window = window
         self.setWindowTitle("업무 이력")
         self.setMinimumSize(640, 500)
+        apply_dark_titlebar(self, CURRENT_THEME != "light")
 
         self.calendar_view = CalendarMonthView(window)
         self.calendar_view.dayClicked.connect(self._jump_to_day)
@@ -1360,6 +1364,26 @@ class HistoryDialog(QDialog):
             self.result_tree.addTopLevelItem(row)
 
 
+def apply_dark_titlebar(widget: QWidget, dark: bool) -> None:
+    """Windows에서 창의 네이티브 타이틀바(맨 위, 최소화/최대화/닫기 버튼이 있는 줄)를
+    앱 테마에 맞춰 어둡게/밝게 바꿉니다. Qt는 이 부분을 직접 그리지 않고 OS가 그리기
+    때문에, 창 스타일시트만으로는 안 바뀌고 Windows API(DWM)를 직접 불러야 합니다."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    hwnd = int(widget.winId())
+    value = ctypes.c_int(1 if dark else 0)
+    # 속성 번호가 Windows 빌드에 따라 다릅니다(1903 이전은 19, 이후는 20) — 실패하면
+    # 다른 번호로 다시 시도합니다.
+    for attr in (20, 19):
+        result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)
+        )
+        if result == 0:
+            break
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -1382,6 +1406,7 @@ class MainWindow(QMainWindow):
         self._restore_settings()
         apply_rules(self.tasks, self.rules)
         self.render()
+        apply_dark_titlebar(self, CURRENT_THEME != "light")
 
     # 화면 구성 -------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -2007,6 +2032,7 @@ class MainWindow(QMainWindow):
         self.column_name_labels[TBD].setStyleSheet(f"color: {column_accent(TBD)};")
         self.settings["theme"] = CURRENT_THEME
         storage.save_settings(self.settings)
+        apply_dark_titlebar(self, CURRENT_THEME != "light")
 
         # 업무 이력 창의 달력은 날짜 칸 색을 앱 스타일시트가 아니라 위젯마다 직접
         # setStyleSheet()으로 구워 두기 때문에, 테마가 바뀌어도 이미 그려진 칸은
@@ -2016,6 +2042,7 @@ class MainWindow(QMainWindow):
             try:
                 if history.isVisible():
                     history.calendar_view._render_month()
+                    apply_dark_titlebar(history, CURRENT_THEME != "light")
             except RuntimeError:
                 pass  # 창이 이미 닫혀서 C++ 쪽 객체가 사라진 경우
         self.render()
