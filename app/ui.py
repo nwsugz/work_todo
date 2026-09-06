@@ -284,6 +284,11 @@ def _fix_calendar_navigation_bar(calendar: QCalendarWidget) -> None:
         if year_edit is not None:
             year_edit.setMinimumWidth(90)
             year_edit.setMinimumHeight(28)
+            # 위/아래 화살표 버튼은 QSS를 입힌 스핀박스에서 실제 그려지는 위치와
+            # 클릭이 인식되는 영역이 어긋나서 눌러도 잘 안 먹는 문제가 있었습니다.
+            # 버튼 자체를 없애고, 숫자를 직접 입력하거나 포커스 상태에서 키보드
+            # 위/아래 화살표로 바꾸도록 안내합니다(그건 버튼과 무관하게 잘 됩니다).
+            year_edit.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
 
     year_button.clicked.connect(_fix_year_edit)
 
