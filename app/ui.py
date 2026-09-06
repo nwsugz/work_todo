@@ -1245,11 +1245,11 @@ class HistoryDialog(QDialog):
 
     def __init__(self, window: "MainWindow") -> None:
         # 부모를 안 넘깁니다 — 부모로 넘기면 TODO 창을 '항상 위'로 고정했을 때 Windows가
-        # 이 창(소유된 창)도 다른 모든 앱 위에 뜨는 걸로 취급해서, 완료 이력 창까지 같이
+        # 이 창(소유된 창)도 다른 모든 앱 위에 뜨는 걸로 취급해서, 업무 이력 창까지 같이
         # 최상단 고정되어 버렸습니다. TODO 창의 고정 여부와 완전히 분리하기 위함입니다.
         super().__init__(None)
         self.window = window
-        self.setWindowTitle("완료 이력")
+        self.setWindowTitle("업무 이력")
         self.setMinimumSize(640, 500)
 
         self.calendar_view = CalendarMonthView(window)
@@ -1361,7 +1361,7 @@ class HistoryDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("TODO / TBD 보드")
+        self.setWindowTitle("Work TODO")
         self.resize(880, 620)
 
         self.tasks: list[Task] = storage.load_tasks()
@@ -1398,7 +1398,7 @@ class MainWindow(QMainWindow):
         self.done_toggle.setCheckable(True)
         self.done_toggle.toggled.connect(self.toggle_done)
         history_button = QPushButton("📅")
-        history_button.setToolTip("완료 이력 보기 (기간별로 완료한 업무 확인)")
+        history_button.setToolTip("업무 이력 보기 (기간별로 완료한 업무 확인)")
         history_button.clicked.connect(self.open_history)
         settings_button = QPushButton("⚙")
         settings_button.setToolTip("설정")
@@ -1602,7 +1602,7 @@ class MainWindow(QMainWindow):
             label = str(len(tasks)) + (f" · 고정 {pinned}" if pinned else "")
             self.counters[column].setText(label)
 
-        # 완료 이력 창을 비모달로 열어 둔 채 TODO에서 업무를 추가/수정할 수 있게
+        # 업무 이력 창을 비모달로 열어 둔 채 TODO에서 업무를 추가/수정할 수 있게
         # 되면서, 그 창도 곧바로 최신 내용을 보여줘야 합니다.
         history = getattr(self, "_history_dialog", None)
         if history is not None:
@@ -1890,8 +1890,8 @@ class MainWindow(QMainWindow):
         children = [t for t in self.tasks if t.parent_id == task.id]
         if task.done and not self.show_done:
             # TODO/TBD 화면에서 완료된 카드를 지우는 경우: 완전히 지우지 않고 그 화면에서만 뺍니다.
-            # DONE 화면·완료 이력에서는 계속 볼 수 있습니다.
-            message = f"'{task.title}'을(를) 목록에서 뺄까요? DONE 화면·완료 이력에서는 계속 확인할 수 있습니다."
+            # DONE 화면·업무 이력에서는 계속 볼 수 있습니다.
+            message = f"'{task.title}'을(를) 목록에서 뺄까요? DONE 화면·업무 이력에서는 계속 확인할 수 있습니다."
             answer = QMessageBox.question(self, "목록에서 빼기", message)
             if answer != QMessageBox.StandardButton.Yes:
                 return
@@ -1904,7 +1904,7 @@ class MainWindow(QMainWindow):
             return
 
         message = (
-            f"'{task.title}'을(를) 완전히 지울까요? 완료 이력에서도 사라집니다."
+            f"'{task.title}'을(를) 완전히 지울까요? 업무 이력에서도 사라집니다."
             if task.done
             else f"'{task.title}'을(를) 지울까요?"
         )
@@ -1983,7 +1983,7 @@ class MainWindow(QMainWindow):
         self.render()
 
     def open_history(self) -> None:
-        # 완료 이력 창은 비모달로 띄웁니다 — TODO 테이블을 계속 조작할 수 있어야 하기
+        # 업무 이력 창은 비모달로 띄웁니다 — TODO 테이블을 계속 조작할 수 있어야 하기
         # 때문입니다(다른 다이얼로그와 달리 이 창만 동시 조작 가능하게 해달라는 요청).
         existing = getattr(self, "_history_dialog", None)
         if existing is not None:
@@ -2006,7 +2006,7 @@ class MainWindow(QMainWindow):
         self.settings["theme"] = CURRENT_THEME
         storage.save_settings(self.settings)
 
-        # 완료 이력 창의 달력은 날짜 칸 색을 앱 스타일시트가 아니라 위젯마다 직접
+        # 업무 이력 창의 달력은 날짜 칸 색을 앱 스타일시트가 아니라 위젯마다 직접
         # setStyleSheet()으로 구워 두기 때문에, 테마가 바뀌어도 이미 그려진 칸은
         # 저절로 안 바뀝니다. 열려 있으면 다시 그려서 새 테마 색을 반영합니다.
         history = getattr(self, "_history_dialog", None)
