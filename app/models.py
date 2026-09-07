@@ -11,6 +11,9 @@ TODO = "TODO"
 TBD = "TBD"
 COLUMNS = (TODO, TBD)
 
+HOLIDAY_TYPES = ("공휴일", "연차", "반차")
+HOLIDAY_TYPE_LABELS = {t: t for t in HOLIDAY_TYPES}
+
 
 def _new_id() -> str:
     return uuid.uuid4().hex[:12]
@@ -80,4 +83,25 @@ class Task:
             collapsed=bool(data.get("collapsed", False)),
             id=str(data.get("id") or _new_id()),
             created_at=str(data.get("created_at") or datetime.now().isoformat(timespec="seconds")),
+        )
+
+
+@dataclass
+class Holiday:
+    date: str          # "YYYY-MM-DD" — 이 날짜 하나당 휴일 한 건
+    type: str = "공휴일"  # 공휴일 · 연차 · 반차
+    name: str = ""      # 비워 두면 유형 이름을 그대로 씁니다
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"date": self.date, "type": self.type, "name": self.name}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Holiday":
+        holiday_type = data.get("type", "공휴일")
+        if holiday_type not in HOLIDAY_TYPES:
+            holiday_type = "공휴일"
+        return cls(
+            date=str(data.get("date", "")),
+            type=holiday_type,
+            name=str(data.get("name") or HOLIDAY_TYPE_LABELS[holiday_type]),
         )

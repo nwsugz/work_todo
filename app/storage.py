@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .models import Task
+from .models import Holiday, Task
 from .rules import DEFAULT_RULES, validate
 
 
@@ -75,6 +75,32 @@ def load_rules() -> tuple[dict[str, Any], str | None]:
 
 def save_rules(rules: dict[str, Any]) -> None:
     _write_atomic(rules_path(), rules)
+
+
+def holidays_path() -> Path:
+    return data_dir() / "holidays.json"
+
+
+def load_holidays() -> dict[str, Holiday]:
+    path = holidays_path()
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    items = raw.get("holidays", raw) if isinstance(raw, dict) else raw
+    if not isinstance(items, list):
+        return {}
+    holidays = [Holiday.from_dict(item) for item in items if isinstance(item, dict) and item.get("date")]
+    return {h.date: h for h in holidays}
+
+
+def save_holidays(holidays: dict[str, Holiday]) -> None:
+    _write_atomic(
+        holidays_path(),
+        {"version": 1, "holidays": [h.to_dict() for h in sorted(holidays.values(), key=lambda h: h.date)]},
+    )
 
 
 def load_settings() -> dict[str, Any]:

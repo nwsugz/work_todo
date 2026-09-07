@@ -7,6 +7,7 @@ import copy
 import os
 import sys
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from PySide6.QtCore import QDate, QEvent, QPoint, QPointF, QRect, QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtGui import (
@@ -47,6 +48,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -58,8 +60,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import storage
-from .models import COLUMNS, TBD, TODO, Task
+from . import storage, workdays
+from .models import COLUMNS, HOLIDAY_TYPE_LABELS, HOLIDAY_TYPES, TBD, TODO, Holiday, Task
 from .rules import apply_rules, classify
 
 URGENT_DAYS = 3  # 마감일까지 이 안이면 '임박'으로 표시
@@ -125,6 +127,7 @@ apply_theme(CURRENT_THEME)
 
 ROLE_TASK_ID = Qt.ItemDataRole.UserRole
 ROLE_CARD = Qt.ItemDataRole.UserRole + 1
+ROLE_RULE_DATA = Qt.ItemDataRole.UserRole + 2
 
 COLUMN_LABEL = {TODO: "TODO", TBD: "TBD"}
 
@@ -321,7 +324,12 @@ def style_calendar_popup(date_edit: QDateEdit) -> None:
         _CalendarHeaderLine(table)
 
 
-def due_caption(task: Task, today: date | None = None) -> str:
+def due_caption(
+    task: Task,
+    today: date | None = None,
+    workday_mode: bool = False,
+    extra_holidays: set[str] | None = None,
+) -> str:
     if not task.due:
         return "마감일 없음"
     today = today or date.today()
@@ -329,6 +337,14 @@ def due_caption(task: Task, today: date | None = None) -> str:
         due = date.fromisoformat(task.due)
     except ValueError:
         return "마감일 없음"
+    if workday_mode:
+        if due == today:
+            return f"{task.due} · 오늘"
+        if due < today:
+            days = workdays.count_workdays(due + timedelta(days=1), today, extra_holidays)
+            return f"{task.due} · {days}일 지남"
+        days = workdays.count_workdays(today + timedelta(days=1), due, extra_holidays)
+        return f"{task.due} · {days}일 남음"
     days = (due - today).days
     if days < 0:
         return f"{task.due} · {-days}일 지남"
@@ -799,6 +815,137 @@ class TaskDialog(QDialog):
         }
 
 
+RULE_CONDITION_KINDS = ("none", "title_contains", "has_due", "due_within_days", "overdue")
+RULE_CONDITION_LABELS = {
+    "none": "조건 없음",
+    "title_contains": "제목에 특정 단어 포함",
+    "has_due": "마감일 있는지",
+    "due_within_days": "마감일이 며칠 이내",
+    "overdue": "마감일이 지났는지",
+}
+
+
+def rule_summary(rule: dict[str, Any]) -> str:
+    name = rule.get("name") or "(이름 없음)"
+    then = rule.get("then", TODO)
+    when = rule.get("when") or {}
+    if "title_contains" in when:
+        words = when.get("title_contains") or []
+        cond = "제목에 " + ", ".join(str(w) for w in words) + " 포함"
+    elif "has_due" in when:
+        cond = "마감일 있음" if when.get("has_due") else "마감일 없음"
+    elif "due_within_days" in when:
+        cond = f"마감일 {when.get('due_within_days')}일 이내"
+    elif "overdue" in when:
+        cond = "마감일 지남" if when.get("overdue") else "마감일 안 지남"
+    else:
+        cond = "조건 없음"
+    return f"[{then}] {name}  ·  {cond}"
+
+
+class RuleDialog(QDialog):
+    """자동 분류 규칙 한 건을 추가/편집하는 창."""
+
+    def __init__(self, rule: dict[str, Any] | None = None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.existing = rule
+        self.setWindowTitle("규칙 편집" if rule else "규칙 추가")
+        apply_dark_titlebar(self, CURRENT_THEME != "light")
+
+        self.name_edit = QLineEdit(rule.get("name", "") if rule else "")
+        self.then_combo = QComboBox()
+        self.then_combo.addItems(list(COLUMNS))
+        if rule:
+            self.then_combo.setCurrentText(rule.get("then", TODO))
+
+        self.kind_combo = QComboBox()
+        for kind in RULE_CONDITION_KINDS:
+            self.kind_combo.addItem(RULE_CONDITION_LABELS[kind], kind)
+
+        when = (rule or {}).get("when") or {}
+        initial_kind = "none"
+        if "title_contains" in when:
+            initial_kind = "title_contains"
+        elif "has_due" in when:
+            initial_kind = "has_due"
+        elif "due_within_days" in when:
+            initial_kind = "due_within_days"
+        elif "overdue" in when:
+            initial_kind = "overdue"
+
+        self.words_edit = QLineEdit(", ".join(str(w) for w in when.get("title_contains", [])))
+        self.words_edit.setPlaceholderText("쉼표로 구분 (예: 보류, 대기, TBD)")
+
+        self.has_due_combo = QComboBox()
+        self.has_due_combo.addItem("있음", True)
+        self.has_due_combo.addItem("없음", False)
+        if initial_kind == "has_due" and not when.get("has_due", True):
+            self.has_due_combo.setCurrentIndex(1)
+
+        self.days_spin = QSpinBox()
+        self.days_spin.setRange(0, 3650)
+        if initial_kind == "due_within_days":
+            self.days_spin.setValue(int(when.get("due_within_days", 0)))
+
+        self.overdue_combo = QComboBox()
+        self.overdue_combo.addItem("지남", True)
+        self.overdue_combo.addItem("안 지남", False)
+        if initial_kind == "overdue" and not when.get("overdue", True):
+            self.overdue_combo.setCurrentIndex(1)
+
+        self.condition_stack = QStackedWidget()
+        self.condition_stack.addWidget(QWidget())            # none
+        self.condition_stack.addWidget(self.words_edit)       # title_contains
+        self.condition_stack.addWidget(self.has_due_combo)    # has_due
+        self.condition_stack.addWidget(self.days_spin)        # due_within_days
+        self.condition_stack.addWidget(self.overdue_combo)    # overdue
+        self.kind_combo.currentIndexChanged.connect(self.condition_stack.setCurrentIndex)
+
+        index = self.kind_combo.findData(initial_kind)
+        if index >= 0:
+            self.kind_combo.setCurrentIndex(index)
+        self.condition_stack.setCurrentIndex(max(index, 0))
+
+        form = QFormLayout()
+        form.addRow("이름", self.name_edit)
+        form.addRow("분류할 칸", self.then_combo)
+        form.addRow("조건", self.kind_combo)
+        form.addRow("", self.condition_stack)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._on_save)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+
+    def _on_save(self) -> None:
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.information(self, "이름이 비었습니다", "규칙 이름을 입력해 주세요.")
+            self.name_edit.setFocus()
+            return
+        kind = self.kind_combo.currentData()
+        if kind == "none":
+            when: dict[str, Any] = {}
+        elif kind == "title_contains":
+            words = [w.strip() for w in self.words_edit.text().split(",") if w.strip()]
+            if not words:
+                QMessageBox.information(self, "단어가 비었습니다", "쉼표로 구분한 단어를 하나 이상 입력해 주세요.")
+                self.words_edit.setFocus()
+                return
+            when = {"title_contains": words}
+        elif kind == "has_due":
+            when = {"has_due": bool(self.has_due_combo.currentData())}
+        elif kind == "due_within_days":
+            when = {"due_within_days": self.days_spin.value()}
+        else:
+            when = {"overdue": bool(self.overdue_combo.currentData())}
+        self.rule = {"name": name, "when": when, "then": self.then_combo.currentText()}
+        self.accept()
+
+
 class SettingsDialog(QDialog):
     """카테고리 우선순위(위쪽일수록 우선) 설정. 목록을 드래그해서 순서를 바꿉니다."""
 
@@ -826,6 +973,15 @@ class SettingsDialog(QDialog):
         theme_row.addWidget(self.light_button)
         theme_row.addWidget(self.dark_button)
         theme_row.addStretch(1)
+
+        self.workday_toggle = QCheckBox("남은 기간에서 휴일 제외 (근무일만 세기)")
+        self.workday_toggle.setChecked(bool(self.window.settings.get("workday_remaining", False)))
+        self.workday_toggle.setToolTip(
+            "체크하면 카드의 'N일 남음/지남'이 달력 날짜 대신 실제 근무일 수로 바뀝니다.\n"
+            "주말과 신정·삼일절·어린이날·현충일·광복절·개천절·한글날·성탄절, 설날·추석 연휴·\n"
+            "부처님오신날이 자동으로 빠집니다. 체크를 끄면 휴일 포함, 달력 날짜 그대로 셉니다."
+        )
+        self.workday_toggle.toggled.connect(self._set_workday_mode)
 
         category_label = QLabel("카테고리 우선순위")
 
@@ -864,18 +1020,65 @@ class SettingsDialog(QDialog):
 
         self._update_category_list_height()
 
+        rule_label = QLabel("자동 분류 규칙")
+
+        rule_frame = QFrame()
+        rule_frame.setObjectName("ruleFrame")
+        rule_frame.setStyleSheet(
+            f"QFrame#ruleFrame {{ border: 1px solid {BORDER}; border-radius: 8px; background: transparent; }}"
+        )
+        rule_frame_layout = QVBoxLayout(rule_frame)
+        rule_frame_layout.setContentsMargins(8, 8, 8, 8)
+        rule_frame_layout.setSpacing(6)
+
+        self.rule_list = QListWidget()
+        self.rule_list.setStyleSheet(
+            "QListWidget { border: none; background: transparent; padding: 0px; }"
+        )
+        self.rule_list.setFrameShape(QFrame.Shape.NoFrame)
+        self.rule_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.rule_list.model().rowsMoved.connect(lambda *_: self._sync_rules())
+        self.rule_list.itemDoubleClicked.connect(lambda _item: self._edit_rule())
+        self._reload_rule_list()
+
+        rule_add_button = QPushButton("추가")
+        rule_add_button.clicked.connect(self._add_rule)
+        rule_edit_button = QPushButton("편집")
+        rule_edit_button.clicked.connect(self._edit_rule)
+        rule_remove_button = QPushButton("삭제")
+        rule_remove_button.clicked.connect(self._remove_rule)
+
+        rule_buttons = QHBoxLayout()
+        rule_buttons.addWidget(rule_add_button)
+        rule_buttons.addWidget(rule_edit_button)
+        rule_buttons.addWidget(rule_remove_button)
+        rule_buttons.addStretch(1)
+
+        rule_frame_layout.addWidget(self.rule_list)
+        rule_frame_layout.addLayout(rule_buttons)
+
         layout = QVBoxLayout(self)
         layout.addWidget(theme_label)
         layout.addLayout(theme_row)
         layout.addSpacing(10)
+        layout.addWidget(self.workday_toggle)
+        layout.addSpacing(10)
         layout.addWidget(category_label)
         layout.addWidget(category_frame)
+        layout.addSpacing(10)
+        layout.addWidget(rule_label)
+        layout.addWidget(rule_frame)
 
     def _set_theme(self, name: str) -> None:
         self.light_button.setChecked(name == "light")
         self.dark_button.setChecked(name != "light")
         self.window.apply_theme(name)
         apply_dark_titlebar(self, name != "light")
+
+    def _set_workday_mode(self, checked: bool) -> None:
+        self.window.settings["workday_remaining"] = checked
+        storage.save_settings(self.window.settings)
+        self.window.render()
 
     def _category_names(self) -> list[str]:
         return [self.category_list.item(i).text() for i in range(self.category_list.count())]
@@ -910,6 +1113,46 @@ class SettingsDialog(QDialog):
     def _sync(self) -> None:
         self.window.settings["categories"] = self._category_names()
         storage.save_settings(self.window.settings)
+        self.window.reapply_rules()
+
+    def _rule_list_items(self) -> list[dict[str, Any]]:
+        return [self.rule_list.item(i).data(ROLE_RULE_DATA) for i in range(self.rule_list.count())]
+
+    def _reload_rule_list(self) -> None:
+        self.rule_list.clear()
+        for rule in self.window.rules.get("rules", []):
+            item = QListWidgetItem(rule_summary(rule))
+            item.setData(ROLE_RULE_DATA, rule)
+            self.rule_list.addItem(item)
+
+    def _add_rule(self) -> None:
+        dialog = RuleDialog(parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.window.rules.setdefault("rules", []).append(dialog.rule)
+            self._reload_rule_list()
+            self._sync_rules()
+
+    def _edit_rule(self) -> None:
+        row = self.rule_list.currentRow()
+        if row < 0:
+            return
+        dialog = RuleDialog(self.rule_list.item(row).data(ROLE_RULE_DATA), parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.window.rules["rules"][row] = dialog.rule
+            self._reload_rule_list()
+            self._sync_rules()
+
+    def _remove_rule(self) -> None:
+        row = self.rule_list.currentRow()
+        if row < 0:
+            return
+        del self.window.rules["rules"][row]
+        self._reload_rule_list()
+        self._sync_rules()
+
+    def _sync_rules(self) -> None:
+        self.window.rules["rules"] = self._rule_list_items()
+        storage.save_rules(self.window.rules)
         self.window.reapply_rules()
 
 
@@ -956,11 +1199,74 @@ def weekday_text_color(column: int) -> str:
     return MUTED
 
 
+class HolidayDialog(QDialog):
+    """업무 이력 달력의 날짜를 더블클릭하면 뜨는, 휴일 지정/편집 창."""
+
+    def __init__(self, window: "MainWindow", day: date, existing: Holiday | None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.window = window
+        self.day = day
+        self.existing = existing
+        self.result_holiday: Holiday | None = None
+        self.delete_requested = False
+        self.setWindowTitle(f"{day.isoformat()} 휴일 지정")
+        apply_dark_titlebar(self, CURRENT_THEME != "light")
+
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(list(HOLIDAY_TYPES))
+        self.name_edit = QLineEdit()
+
+        initial_type = existing.type if existing else HOLIDAY_TYPES[0]
+        self.type_combo.setCurrentText(initial_type)
+        self.name_edit.setText(existing.name if existing else HOLIDAY_TYPE_LABELS[initial_type])
+        self._last_type_for_name_sync = initial_type
+        self.type_combo.currentTextChanged.connect(self._sync_name_with_type)
+
+        form = QFormLayout()
+        form.addRow("유형", self.type_combo)
+        form.addRow("이름", self.name_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._on_save)
+        buttons.rejected.connect(self.reject)
+
+        button_row = QHBoxLayout()
+        if existing:
+            delete_button = QPushButton("삭제")
+            delete_button.clicked.connect(self._on_delete)
+            button_row.addWidget(delete_button)
+        button_row.addStretch(1)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addLayout(button_row)
+        layout.addWidget(buttons)
+
+    def _sync_name_with_type(self, new_type: str) -> None:
+        """이름 칸이 아직 이전 유형의 기본값 그대로면 새 유형 기본값으로 같이 바꿔 줍니다.
+        사용자가 이름을 직접 고쳤으면(기본값과 다르면) 손대지 않습니다."""
+        old_default = HOLIDAY_TYPE_LABELS.get(self._last_type_for_name_sync, "")
+        if self.name_edit.text().strip() == old_default:
+            self.name_edit.setText(HOLIDAY_TYPE_LABELS.get(new_type, new_type))
+        self._last_type_for_name_sync = new_type
+
+    def _on_save(self) -> None:
+        holiday_type = self.type_combo.currentText()
+        name = self.name_edit.text().strip() or HOLIDAY_TYPE_LABELS.get(holiday_type, holiday_type)
+        self.result_holiday = Holiday(date=self.day.isoformat(), type=holiday_type, name=name)
+        self.accept()
+
+    def _on_delete(self) -> None:
+        self.delete_requested = True
+        self.accept()
+
+
 class CalendarMonthView(QWidget):
     """완료한 대주제 업무를 시작일~마감일 구간의 색상줄로 월 달력에 보여줍니다.
-    날짜 숫자를 누르면 dayClicked가 그 날짜를 알려줍니다."""
+    날짜 숫자를 누르면 dayClicked가, 더블클릭하면 dayDoubleClicked가 그 날짜를 알려줍니다."""
 
     dayClicked = Signal(object)  # datetime.date
+    dayDoubleClicked = Signal(object)  # datetime.date — 휴일 지정/편집에 씁니다
     monthRendered = Signal()  # 달이 바뀌거나 다시 그려질 때마다 — 창 크기를 다시 맞추는 데 씁니다
 
     def __init__(self, window: "MainWindow", parent: QWidget | None = None) -> None:
@@ -1188,10 +1494,24 @@ class CalendarMonthView(QWidget):
                     day_label.setStyleSheet(
                         f"color: {TEXT if in_month else MUTED}; font-weight: 600; background: transparent;"
                     )
-                cell_layout.addWidget(day_label)
+
+                top_row = QHBoxLayout()
+                top_row.setContentsMargins(0, 0, 0, 0)
+                top_row.setSpacing(4)
+                top_row.addWidget(day_label)
+                holiday = self.window.holidays.get(day.isoformat())
+                if holiday:
+                    holiday_label = QLabel(holiday.name)
+                    holiday_label.setStyleSheet(
+                        f"color: {MUTED}; font-size: 10px; font-weight: 500; background: transparent;"
+                    )
+                    top_row.addWidget(holiday_label)
+                top_row.addStretch(1)
+                cell_layout.addLayout(top_row)
 
                 cell.setCursor(Qt.CursorShape.PointingHandCursor)
                 cell.mousePressEvent = lambda _event, d=day: self.dayClicked.emit(d)
+                cell.mouseDoubleClickEvent = lambda _event, d=day: self.dayDoubleClicked.emit(d)
                 self.grid.addWidget(cell, row_cursor, column, 1 + lanes_used, 1)
                 self._day_cells.append(cell)
 
@@ -1260,6 +1580,7 @@ class HistoryDialog(QDialog):
 
         self.calendar_view = CalendarMonthView(window)
         self.calendar_view.dayClicked.connect(self._jump_to_day)
+        self.calendar_view.dayDoubleClicked.connect(self._edit_holiday)
         # 달력은 줄이 늘어나도 눌리지 않고 항상 한 번에 다 보여야 하므로, 달력 자체를 스크롤에
         # 가두지 않고 창을 그만큼 키웁니다. 대신 아래 업무 목록은 자체 스크롤로 넘칩니다.
         self.calendar_view.monthRendered.connect(self._fit_window_to_calendar)
@@ -1317,6 +1638,18 @@ class HistoryDialog(QDialog):
         with QSignalBlocker(self.start_edit):
             self.start_edit.setDate(target)
         self.end_edit.setDate(target)  # end_edit의 dateChanged가 _refresh를 한 번만 트리거합니다
+
+    def _edit_holiday(self, day: date) -> None:
+        """달력 날짜를 더블클릭하면 그 날을 휴일로 지정/편집(이미 있으면 삭제도) 합니다."""
+        existing = self.window.holidays.get(day.isoformat())
+        dialog = HolidayDialog(self.window, day, existing, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.delete_requested:
+            self.window.set_holiday(day, None)
+        elif dialog.result_holiday:
+            self.window.set_holiday(day, dialog.result_holiday)
+        self.calendar_view._render_month()
 
     def _tasks_in_range(self, start: date, end: date) -> list[Task]:
         items = []
@@ -1393,6 +1726,7 @@ class MainWindow(QMainWindow):
         self.tasks: list[Task] = storage.load_tasks()
         self.rules, _ = storage.load_rules()
         self.settings: dict = storage.load_settings()
+        self.holidays: dict[str, Holiday] = storage.load_holidays()
         self.show_done = False
 
         self.lists: dict[str, ColumnList] = {}
@@ -1561,11 +1895,11 @@ class MainWindow(QMainWindow):
         """완료된 업무도 (지우기 전까지는) 여기 그대로 남아 있습니다 — DONE 화면과 동시에 보입니다.
         TODO/TBD 화면에서 뺀(archived) 업무만 여기서 사라집니다."""
         items = [t for t in self.tasks if t.column == column and t.parent_id is None and not t.archived]
-        return sorted(items, key=lambda t: (t.done, t.checked, self.category_rank(t), t.order))
+        return sorted(items, key=lambda t: (self.category_rank(t), t.order))
 
     def child_tasks(self, parent_id: str) -> list[Task]:
         items = [t for t in self.tasks if t.parent_id == parent_id and not t.archived]
-        return sorted(items, key=lambda t: (t.done, t.checked, t.order))
+        return sorted(items, key=lambda t: t.order)
 
     def visible_tasks(self, column: str) -> list[Task]:
         """부모 다음에 그 하위 업무들이 이어지는, 화면에 그릴 순서 그대로의 목록."""
@@ -1643,7 +1977,11 @@ class MainWindow(QMainWindow):
         parts = []
         if task.category:
             parts.append(f"[{task.category}]")
-        parts.append(due_caption(task))
+        parts.append(due_caption(
+            task,
+            workday_mode=self.settings.get("workday_remaining", False),
+            extra_holidays=self._workday_exclusions(),
+        ))
         children = [t for t in self.tasks if t.parent_id == task.id and not t.archived]
         if children:
             # 체크박스만 눌러도(완료 처리까지는 안 갔어도) "다 했다"는 뜻으로 보고 숫자에 반영합니다.
@@ -1978,8 +2316,20 @@ class MainWindow(QMainWindow):
         task.done_at = datetime.now().isoformat(timespec="seconds") if done else None
         if not done:
             task.archived = False  # 완료를 취소하면 다시 TODO/TBD 화면에 보여야 합니다
+        else:
+            self._move_to_end_of_group(task)  # 완료 처리한 순간 맨 아래로. 이후엔 드래그로 자유롭게 옮길 수 있습니다
         self.persist()
         self.render()
+
+    def _move_to_end_of_group(self, task: Task) -> None:
+        if task.parent_id:
+            siblings = [t for t in self.tasks if t.parent_id == task.parent_id and t.id != task.id and not t.archived]
+        else:
+            siblings = [
+                t for t in self.tasks
+                if t.column == task.column and t.parent_id is None and t.id != task.id and not t.archived
+            ]
+        task.order = max((t.order for t in siblings), default=-1) + 1
 
     def set_checked(self, task: Task, checked: bool) -> None:
         task.checked = checked
@@ -2002,6 +2352,20 @@ class MainWindow(QMainWindow):
         self.rules, _ = storage.load_rules()
         apply_rules(self.tasks, self.rules)
         self.persist()
+        self.render()
+
+    def _workday_exclusions(self) -> set[str]:
+        """근무일 계산에서 뺄 날짜(공휴일·연차). 반차는 반나절만 쉬는 것이라 빠지지 않습니다."""
+        return {d for d, h in self.holidays.items() if h.type in ("공휴일", "연차")}
+
+    def set_holiday(self, day: date, holiday: Holiday | None) -> None:
+        """holiday가 None이면 그 날짜 지정을 지웁니다."""
+        key = day.isoformat()
+        if holiday is None:
+            self.holidays.pop(key, None)
+        else:
+            self.holidays[key] = holiday
+        storage.save_holidays(self.holidays)
         self.render()
 
     def open_settings(self) -> None:
