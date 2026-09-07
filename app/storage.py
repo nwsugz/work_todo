@@ -73,10 +73,6 @@ def load_rules() -> tuple[dict[str, Any], str | None]:
     return raw, None
 
 
-def save_rules(rules: dict[str, Any]) -> None:
-    _write_atomic(rules_path(), rules)
-
-
 def holidays_path() -> Path:
     return data_dir() / "holidays.json"
 

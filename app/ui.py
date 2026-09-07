@@ -7,7 +7,6 @@ import copy
 import os
 import sys
 from datetime import date, datetime, timedelta
-from typing import Any
 
 from PySide6.QtCore import QDate, QEvent, QPoint, QPointF, QRect, QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtGui import (
@@ -25,6 +24,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QAbstractSpinBox,
     QApplication,
     QCalendarWidget,
     QCheckBox,
@@ -48,7 +48,6 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
-    QStackedWidget,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -127,7 +126,6 @@ apply_theme(CURRENT_THEME)
 
 ROLE_TASK_ID = Qt.ItemDataRole.UserRole
 ROLE_CARD = Qt.ItemDataRole.UserRole + 1
-ROLE_RULE_DATA = Qt.ItemDataRole.UserRole + 2
 
 COLUMN_LABEL = {TODO: "TODO", TBD: "TBD"}
 
@@ -191,7 +189,16 @@ def ui_font(size: int = 10, bold: bool = False) -> QFont:
 class NoWheelDateEdit(QDateEdit):
     """마우스 휠에 반응하지 않는 QDateEdit. 다이얼로그 안에서 스크롤하려다 커서가
     날짜 칸 위에 있으면 그 칸의 날짜 숫자가 휠에 맞춰 계속 늘어나 버리는 문제가
-    있어서, 이 위젯은 휠 이벤트를 아예 무시합니다(클릭/키보드 편집은 그대로 됩니다)."""
+    있어서, 이 위젯은 휠 이벤트를 아예 무시합니다(클릭/키보드 편집은 그대로 됩니다).
+
+    위/아래 스핀 화살표도 아예 숨깁니다 — 달력 팝업 버튼과 나란히 붙어 있다 보니
+    스타일시트 패딩 때문에 클릭 영역이 겹쳐서, 달력을 열려고 누른 게 스핀 화살표에
+    맞아 연도가 1씩 튀어 오르는 문제가 있었습니다(예: 2026년 → 2027년). 날짜는
+    달력 팝업이나 직접 타이핑으로 바꾸면 되므로 스핀 버튼 자체가 필요 없습니다."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
 
     def wheelEvent(self, event) -> None:
         event.ignore()
@@ -230,8 +237,7 @@ def _apply_date_colors(calendar: QCalendarWidget) -> None:
     - setWeekdayTextFormat()은 요일 헤더 글자뿐 아니라 그 요일 날짜 칸까지 같이
       색이 입혀지므로, 헤더에만 색이 남게 주말 날짜는 평소 색으로 되돌립니다.
     - 지난달/다음달로 넘어간 날짜는 이번 달보다 눈에 띄게 어둡혀서 구분합니다.
-    - 오늘 날짜는 볼드로 표시합니다(밑줄은 눈에 잘 안 띈다는 의견이 있어 빼고 볼드로 교체).
-      이번 달 날짜는 볼드로 안 하고 색으로만 구분해서, 오늘 날짜의 볼드가 묻히지 않게 합니다.
+    - 오늘 날짜는 파란 배경 네모칸으로 표시해서 한눈에 바로 띕니다.
     """
     year, month = calendar.yearShown(), calendar.monthShown()
     weeks = calendar_module.Calendar(firstweekday=6).monthdatescalendar(year, month)
@@ -240,9 +246,12 @@ def _apply_date_colors(calendar: QCalendarWidget) -> None:
     for week in weeks:
         for day in week:
             fmt = QTextCharFormat()
-            fmt.setForeground(QColor(TEXT) if day.month == month else faded)
             if day == today:
+                fmt.setBackground(QColor(PIN))
+                fmt.setForeground(QColor("#FFFFFF"))
                 fmt.setFontWeight(QFont.Weight.Bold)
+            else:
+                fmt.setForeground(QColor(TEXT) if day.month == month else faded)
             calendar.setDateTextFormat(QDate(day.year, day.month, day.day), fmt)
 
 
@@ -310,12 +319,27 @@ def style_calendar_popup(date_edit: QDateEdit) -> None:
     calendar.setWeekdayTextFormat(Qt.DayOfWeek.Sunday, sunday_format)
     calendar.setWeekdayTextFormat(Qt.DayOfWeek.Saturday, saturday_format)
 
+    def _sync_selection_style(*_args) -> None:
+        # 선택된(=필드에 입력된) 날짜도 기본적으로 파란 배경으로 칠해지는데, 그게 오늘 날짜
+        # 강조와 겹치면 둘 다 파랗게 보여서 "오늘"이 특별히 안 보입니다. 선택된 날짜가
+        # 오늘이 아닐 때만 그 파란 배경을 꺼서, 파란 네모칸은 항상 오늘 날짜만 가리키게 합니다.
+        if calendar.selectedDate().toPython() == date.today():
+            calendar.setStyleSheet(
+                f"QAbstractItemView {{ selection-background-color: {PIN}; selection-color: #FFFFFF; }}"
+            )
+        else:
+            calendar.setStyleSheet(
+                f"QAbstractItemView {{ selection-background-color: transparent; selection-color: {TEXT}; }}"
+            )
+
     def _refresh(*_args) -> None:
         _apply_date_colors(calendar)
         _trim_trailing_week_row(calendar)
+        _sync_selection_style()
 
     _refresh()
     calendar.currentPageChanged.connect(_refresh)
+    calendar.selectionChanged.connect(_sync_selection_style)
 
     _fix_calendar_navigation_bar(calendar)
 
@@ -343,7 +367,7 @@ def due_caption(
         if due < today:
             days = workdays.count_workdays(due + timedelta(days=1), today, extra_holidays)
             return f"{task.due} · {days}일 지남"
-        days = workdays.count_workdays(today + timedelta(days=1), due, extra_holidays)
+        days = workdays.count_workdays(today, due, extra_holidays)
         return f"{task.due} · {days}일 남음"
     days = (due - today).days
     if days < 0:
@@ -411,7 +435,7 @@ def app_stylesheet() -> str:
     QCalendarWidget QSpinBox {{ background: {SURFACE}; color: {TEXT}; }}
     QCalendarWidget QAbstractItemView {{
         background: {SURFACE}; color: {TEXT}; outline: none;
-        selection-background-color: {PIN}; selection-color: #FFFFFF;
+        selection-background-color: transparent; selection-color: {TEXT};
     }}
     QCalendarWidget QAbstractItemView:disabled {{ color: {MUTED}; }}
     QCalendarWidget QHeaderView::section {{
@@ -815,137 +839,6 @@ class TaskDialog(QDialog):
         }
 
 
-RULE_CONDITION_KINDS = ("none", "title_contains", "has_due", "due_within_days", "overdue")
-RULE_CONDITION_LABELS = {
-    "none": "조건 없음",
-    "title_contains": "제목에 특정 단어 포함",
-    "has_due": "마감일 있는지",
-    "due_within_days": "마감일이 며칠 이내",
-    "overdue": "마감일이 지났는지",
-}
-
-
-def rule_summary(rule: dict[str, Any]) -> str:
-    name = rule.get("name") or "(이름 없음)"
-    then = rule.get("then", TODO)
-    when = rule.get("when") or {}
-    if "title_contains" in when:
-        words = when.get("title_contains") or []
-        cond = "제목에 " + ", ".join(str(w) for w in words) + " 포함"
-    elif "has_due" in when:
-        cond = "마감일 있음" if when.get("has_due") else "마감일 없음"
-    elif "due_within_days" in when:
-        cond = f"마감일 {when.get('due_within_days')}일 이내"
-    elif "overdue" in when:
-        cond = "마감일 지남" if when.get("overdue") else "마감일 안 지남"
-    else:
-        cond = "조건 없음"
-    return f"[{then}] {name}  ·  {cond}"
-
-
-class RuleDialog(QDialog):
-    """자동 분류 규칙 한 건을 추가/편집하는 창."""
-
-    def __init__(self, rule: dict[str, Any] | None = None, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.existing = rule
-        self.setWindowTitle("규칙 편집" if rule else "규칙 추가")
-        apply_dark_titlebar(self, CURRENT_THEME != "light")
-
-        self.name_edit = QLineEdit(rule.get("name", "") if rule else "")
-        self.then_combo = QComboBox()
-        self.then_combo.addItems(list(COLUMNS))
-        if rule:
-            self.then_combo.setCurrentText(rule.get("then", TODO))
-
-        self.kind_combo = QComboBox()
-        for kind in RULE_CONDITION_KINDS:
-            self.kind_combo.addItem(RULE_CONDITION_LABELS[kind], kind)
-
-        when = (rule or {}).get("when") or {}
-        initial_kind = "none"
-        if "title_contains" in when:
-            initial_kind = "title_contains"
-        elif "has_due" in when:
-            initial_kind = "has_due"
-        elif "due_within_days" in when:
-            initial_kind = "due_within_days"
-        elif "overdue" in when:
-            initial_kind = "overdue"
-
-        self.words_edit = QLineEdit(", ".join(str(w) for w in when.get("title_contains", [])))
-        self.words_edit.setPlaceholderText("쉼표로 구분 (예: 보류, 대기, TBD)")
-
-        self.has_due_combo = QComboBox()
-        self.has_due_combo.addItem("있음", True)
-        self.has_due_combo.addItem("없음", False)
-        if initial_kind == "has_due" and not when.get("has_due", True):
-            self.has_due_combo.setCurrentIndex(1)
-
-        self.days_spin = QSpinBox()
-        self.days_spin.setRange(0, 3650)
-        if initial_kind == "due_within_days":
-            self.days_spin.setValue(int(when.get("due_within_days", 0)))
-
-        self.overdue_combo = QComboBox()
-        self.overdue_combo.addItem("지남", True)
-        self.overdue_combo.addItem("안 지남", False)
-        if initial_kind == "overdue" and not when.get("overdue", True):
-            self.overdue_combo.setCurrentIndex(1)
-
-        self.condition_stack = QStackedWidget()
-        self.condition_stack.addWidget(QWidget())            # none
-        self.condition_stack.addWidget(self.words_edit)       # title_contains
-        self.condition_stack.addWidget(self.has_due_combo)    # has_due
-        self.condition_stack.addWidget(self.days_spin)        # due_within_days
-        self.condition_stack.addWidget(self.overdue_combo)    # overdue
-        self.kind_combo.currentIndexChanged.connect(self.condition_stack.setCurrentIndex)
-
-        index = self.kind_combo.findData(initial_kind)
-        if index >= 0:
-            self.kind_combo.setCurrentIndex(index)
-        self.condition_stack.setCurrentIndex(max(index, 0))
-
-        form = QFormLayout()
-        form.addRow("이름", self.name_edit)
-        form.addRow("분류할 칸", self.then_combo)
-        form.addRow("조건", self.kind_combo)
-        form.addRow("", self.condition_stack)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._on_save)
-        buttons.rejected.connect(self.reject)
-
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(buttons)
-
-    def _on_save(self) -> None:
-        name = self.name_edit.text().strip()
-        if not name:
-            QMessageBox.information(self, "이름이 비었습니다", "규칙 이름을 입력해 주세요.")
-            self.name_edit.setFocus()
-            return
-        kind = self.kind_combo.currentData()
-        if kind == "none":
-            when: dict[str, Any] = {}
-        elif kind == "title_contains":
-            words = [w.strip() for w in self.words_edit.text().split(",") if w.strip()]
-            if not words:
-                QMessageBox.information(self, "단어가 비었습니다", "쉼표로 구분한 단어를 하나 이상 입력해 주세요.")
-                self.words_edit.setFocus()
-                return
-            when = {"title_contains": words}
-        elif kind == "has_due":
-            when = {"has_due": bool(self.has_due_combo.currentData())}
-        elif kind == "due_within_days":
-            when = {"due_within_days": self.days_spin.value()}
-        else:
-            when = {"overdue": bool(self.overdue_combo.currentData())}
-        self.rule = {"name": name, "when": when, "then": self.then_combo.currentText()}
-        self.accept()
-
-
 class SettingsDialog(QDialog):
     """카테고리 우선순위(위쪽일수록 우선) 설정. 목록을 드래그해서 순서를 바꿉니다."""
 
@@ -975,7 +868,7 @@ class SettingsDialog(QDialog):
         theme_row.addStretch(1)
 
         self.workday_toggle = QCheckBox("남은 기간에서 휴일 제외 (근무일만 세기)")
-        self.workday_toggle.setChecked(bool(self.window.settings.get("workday_remaining", False)))
+        self.workday_toggle.setChecked(bool(self.window.settings.get("workday_remaining", True)))
         self.workday_toggle.setToolTip(
             "체크하면 카드의 'N일 남음/지남'이 달력 날짜 대신 실제 근무일 수로 바뀝니다.\n"
             "주말과 신정·삼일절·어린이날·현충일·광복절·개천절·한글날·성탄절, 설날·추석 연휴·\n"
@@ -1020,43 +913,6 @@ class SettingsDialog(QDialog):
 
         self._update_category_list_height()
 
-        rule_label = QLabel("자동 분류 규칙")
-
-        rule_frame = QFrame()
-        rule_frame.setObjectName("ruleFrame")
-        rule_frame.setStyleSheet(
-            f"QFrame#ruleFrame {{ border: 1px solid {BORDER}; border-radius: 8px; background: transparent; }}"
-        )
-        rule_frame_layout = QVBoxLayout(rule_frame)
-        rule_frame_layout.setContentsMargins(8, 8, 8, 8)
-        rule_frame_layout.setSpacing(6)
-
-        self.rule_list = QListWidget()
-        self.rule_list.setStyleSheet(
-            "QListWidget { border: none; background: transparent; padding: 0px; }"
-        )
-        self.rule_list.setFrameShape(QFrame.Shape.NoFrame)
-        self.rule_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.rule_list.model().rowsMoved.connect(lambda *_: self._sync_rules())
-        self.rule_list.itemDoubleClicked.connect(lambda _item: self._edit_rule())
-        self._reload_rule_list()
-
-        rule_add_button = QPushButton("추가")
-        rule_add_button.clicked.connect(self._add_rule)
-        rule_edit_button = QPushButton("편집")
-        rule_edit_button.clicked.connect(self._edit_rule)
-        rule_remove_button = QPushButton("삭제")
-        rule_remove_button.clicked.connect(self._remove_rule)
-
-        rule_buttons = QHBoxLayout()
-        rule_buttons.addWidget(rule_add_button)
-        rule_buttons.addWidget(rule_edit_button)
-        rule_buttons.addWidget(rule_remove_button)
-        rule_buttons.addStretch(1)
-
-        rule_frame_layout.addWidget(self.rule_list)
-        rule_frame_layout.addLayout(rule_buttons)
-
         layout = QVBoxLayout(self)
         layout.addWidget(theme_label)
         layout.addLayout(theme_row)
@@ -1065,9 +921,6 @@ class SettingsDialog(QDialog):
         layout.addSpacing(10)
         layout.addWidget(category_label)
         layout.addWidget(category_frame)
-        layout.addSpacing(10)
-        layout.addWidget(rule_label)
-        layout.addWidget(rule_frame)
 
     def _set_theme(self, name: str) -> None:
         self.light_button.setChecked(name == "light")
@@ -1113,46 +966,6 @@ class SettingsDialog(QDialog):
     def _sync(self) -> None:
         self.window.settings["categories"] = self._category_names()
         storage.save_settings(self.window.settings)
-        self.window.reapply_rules()
-
-    def _rule_list_items(self) -> list[dict[str, Any]]:
-        return [self.rule_list.item(i).data(ROLE_RULE_DATA) for i in range(self.rule_list.count())]
-
-    def _reload_rule_list(self) -> None:
-        self.rule_list.clear()
-        for rule in self.window.rules.get("rules", []):
-            item = QListWidgetItem(rule_summary(rule))
-            item.setData(ROLE_RULE_DATA, rule)
-            self.rule_list.addItem(item)
-
-    def _add_rule(self) -> None:
-        dialog = RuleDialog(parent=self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.window.rules.setdefault("rules", []).append(dialog.rule)
-            self._reload_rule_list()
-            self._sync_rules()
-
-    def _edit_rule(self) -> None:
-        row = self.rule_list.currentRow()
-        if row < 0:
-            return
-        dialog = RuleDialog(self.rule_list.item(row).data(ROLE_RULE_DATA), parent=self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.window.rules["rules"][row] = dialog.rule
-            self._reload_rule_list()
-            self._sync_rules()
-
-    def _remove_rule(self) -> None:
-        row = self.rule_list.currentRow()
-        if row < 0:
-            return
-        del self.window.rules["rules"][row]
-        self._reload_rule_list()
-        self._sync_rules()
-
-    def _sync_rules(self) -> None:
-        self.window.rules["rules"] = self._rule_list_items()
-        storage.save_rules(self.window.rules)
         self.window.reapply_rules()
 
 
@@ -1979,7 +1792,7 @@ class MainWindow(QMainWindow):
             parts.append(f"[{task.category}]")
         parts.append(due_caption(
             task,
-            workday_mode=self.settings.get("workday_remaining", False),
+            workday_mode=self.settings.get("workday_remaining", True),
             extra_holidays=self._workday_exclusions(),
         ))
         children = [t for t in self.tasks if t.parent_id == task.id and not t.archived]
@@ -2449,6 +2262,10 @@ def _icon_path() -> str:
 
 def run() -> int:
     app = QApplication(sys.argv)
+    # Windows 기본 스타일(windowsvista/windows11)은 QSS 커스텀 스타일을 제대로 안 지킬 때가
+    # 있습니다(예: 달력 오늘 날짜 배경색이 우리 스타일시트로는 그려지는데 이 스타일에서는
+    # 무시되는 문제). Fusion으로 고정해서 앱 전체가 항상 우리가 지정한 대로 그려지게 합니다.
+    app.setStyle("Fusion")
     app.setApplicationName("Taskit")
     icon_path = _icon_path()
     if os.path.exists(icon_path):
