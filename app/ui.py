@@ -6,6 +6,7 @@ import calendar as calendar_module
 import copy
 import os
 import sys
+import traceback
 from datetime import date, datetime, timedelta
 
 from PySide6.QtCore import QDate, QEvent, QPoint, QPointF, QRect, QSignalBlocker, QSize, Qt, Signal
@@ -714,12 +715,17 @@ class ColumnList(QListWidget):
         task_id = item.data(ROLE_TASK_ID)
         pos = event.position().toPoint()
         target_index = self.indexAt(pos)
-        indicator = self.dropIndicatorPosition()
 
-        if indicator == QAbstractItemView.DropIndicatorPosition.OnItem and target_index.isValid():
-            target_item = self.itemFromIndex(target_index)
+        # 하위 업무로 넣을지(nest) 순서만 바꿀지(reorder)는 Qt 기본 OnItem/Above/Below
+        # 판정(카드 세로 길이의 위/아래 25%씩만 순서 변경으로 침) 대신, 카드의 정중앙
+        # 40%(위아래 30%씩 뺀 나머지) 안에 정확히 떨어뜨렸을 때만 하위로 넣습니다. 카드가
+        # 여러 줄이라 키가 크면 Qt 기본값으로는 살짝만 움직여도 하위로 들어가 버렸습니다.
+        hit = self._hit(pos)
+        if hit is not None:
+            target_item, _card, rect = hit
             target_id = target_item.data(ROLE_TASK_ID)
-            if target_id != task_id:
+            band = rect.height() * 0.3
+            if target_id != task_id and rect.height() > 0 and rect.top() + band <= pos.y() <= rect.bottom() - band:
                 event.setDropAction(Qt.DropAction.MoveAction)
                 event.accept()
                 self.taskNestRequested.emit(task_id, target_id)
@@ -734,7 +740,7 @@ class ColumnList(QListWidget):
                 row = 0
             else:
                 row = self.count()
-        elif indicator == QAbstractItemView.DropIndicatorPosition.BelowItem:
+        elif pos.y() > self.visualItemRect(self.itemFromIndex(target_index)).center().y():
             row += 1
 
         moved_across = source is not self
@@ -1914,6 +1920,7 @@ class MainWindow(QMainWindow):
         self.tasks.append(task)
         self.persist()
         self.render()
+        self._scroll_to_task(task.id)
 
     def add_subtask(self, parent: Task) -> None:
         dialog = TaskDialog(self, categories=self.settings.get("categories", []))
@@ -1930,6 +1937,22 @@ class MainWindow(QMainWindow):
         self.tasks.append(task)
         self.persist()
         self.render()
+        self._scroll_to_task(task.id)
+
+    def _scroll_to_task(self, task_id: str) -> None:
+        """창이 작아서 목록이 한 화면에 다 안 들어올 때, 방금 추가한 카드가 화면 밖에
+        놓여도 아무 반응이 없는 것처럼 보이지 않도록 그 카드가 보이는 위치로 스크롤합니다."""
+        task = self.find(task_id)
+        if task is None:
+            return
+        listing = self.lists.get(task.column)
+        if listing is None:
+            return
+        for i in range(listing.count()):
+            item = listing.item(i)
+            if item.data(ROLE_TASK_ID) == task_id:
+                listing.scrollToItem(item)
+                return
 
     def current_task(self, column: str) -> Task | None:
         item = self.lists[column].currentItem()
@@ -2129,6 +2152,12 @@ class MainWindow(QMainWindow):
         task.done_at = datetime.now().isoformat(timespec="seconds") if done else None
         if not done:
             task.archived = False  # 완료를 취소하면 다시 TODO/TBD 화면에 보여야 합니다
+            if task.parent_id is None:
+                # 대주제(프로젝트)를 완료 취소하면, 전에 TODO/TBD에서 함께 빼졌던(archived)
+                # 하위 업무들도 같이 다시 보여야 합니다 — 각자의 완료 체크 자체는 그대로 둡니다.
+                for child in self.tasks:
+                    if child.parent_id == task.id:
+                        child.archived = False
         else:
             self._move_to_end_of_group(task)  # 완료 처리한 순간 맨 아래로. 이후엔 드래그로 자유롭게 옮길 수 있습니다
         self.persist()
@@ -2260,7 +2289,26 @@ def _icon_path() -> str:
     return os.path.join(base, "app", "assets", "icon.png")
 
 
+def _install_crash_logger() -> None:
+    """예상 못 한 예외로 창이 갑자기 꺼졌을 때, 원인을 알 방법이 없으면 고칠 수가
+    없습니다. 잡히지 않은 예외를 %APPDATA%\\TodoTBD\\crash.log 에 남겨서, 다음에
+    같은 문제가 또 생기면 그 로그로 정확한 원인을 짚을 수 있게 합니다."""
+    log_path = storage.data_dir() / "crash.log"
+
+    def _handle(exc_type, exc_value, exc_tb) -> None:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n=== {datetime.now().isoformat(timespec='seconds')} ===\n")
+                traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+        except OSError:
+            pass
+        traceback.print_exception(exc_type, exc_value, exc_tb, file=sys.stderr)
+
+    sys.excepthook = _handle
+
+
 def run() -> int:
+    _install_crash_logger()
     app = QApplication(sys.argv)
     # Windows 기본 스타일(windowsvista/windows11)은 QSS 커스텀 스타일을 제대로 안 지킬 때가
     # 있습니다(예: 달력 오늘 날짜 배경색이 우리 스타일시트로는 그려지는데 이 스타일에서는
