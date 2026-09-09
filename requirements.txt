@@ -1,2 +1,2 @@
-PySide6==6.7.2
+PySide6==6.11.2
 korean_lunar_calendar==0.4.0

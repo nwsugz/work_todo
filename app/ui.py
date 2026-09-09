@@ -415,7 +415,8 @@ def app_stylesheet() -> str:
     QPushButton#doneToggle:hover {{ background: {SELECTED_BG}; }}
     QPushButton#doneToggle:checked {{ background: {SURFACE_HOVER}; color: {AMBER}; }}
     QListWidget {{
-        background: transparent; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px;
+        background: transparent; border: 1px solid {BORDER}; border-radius: 8px;
+        padding: 0px 4px 4px 4px;
     }}
     QListWidget::item {{ border: none; padding: 4px; }}
     QListWidget::item:selected {{ background: {SELECTED_BG}; color: {TEXT}; }}
@@ -541,7 +542,7 @@ class CardDelegate(QStyledItemDelegate):
 class ColumnList(QListWidget):
     """드롭을 직접 처리합니다. 목록은 컨트롤러가 다시 그립니다."""
 
-    taskDropped = Signal(str, str, int, bool)  # 업무 id, 대상 칸, 위치, 칸이 바뀌었는지
+    taskDropped = Signal(str, str, int, bool, object)  # 업무 id, 대상 칸, 위치, 칸이 바뀌었는지, 새 parent_id
     taskCheckToggled = Signal(str)  # 업무 id — 체크 표시만 바꿈 (자리 유지)
     taskDeleteRequested = Signal(str)  # 업무 id — Backspace/Delete로 삭제 요청
     taskCollapseToggled = Signal(str)  # 업무 id — 하위 업무 접기/펼치기
@@ -553,7 +554,13 @@ class ColumnList(QListWidget):
         self.setItemDelegate(CardDelegate(self))
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
+        # Qt 기본 드롭 표시(줄/네모칸)는 내부적으로 카드 세로 길이의 위/아래 일부만
+        # "순서 변경" 구역으로 치고 나머지 전부를 "하위로 넣기"로 판정하는데, 이 경계가
+        # 카드 높이·자식 유무에 따라 미묘하게 달라져서 어떤 카드에서는 박스가, 어떤
+        # 카드에서는 줄이 뜨는 등 표시가 들쭉날쭉했습니다. 대신 우리가 직접 계산해서
+        # 그리므로(_compute_drop_plan/paintEvent) Qt 기본 표시는 꺼 둡니다.
+        self.setDropIndicatorShown(False)
+        self._drop_plan: dict | None = None
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -567,25 +574,17 @@ class ColumnList(QListWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         # 줄바꿈 폭이 창 너비에 따라 달라지는데, Qt는 리사이즈만으로 각 카드의 sizeHint를
-        # 다시 계산해 주지 않습니다(항목 크기를 한 번 계산하면 그대로 캐시해 둡니다).
-        # 항목을 통째로 다시 만들어야만 새 너비에 맞춰 줄바꿈 높이가 다시 계산됩니다.
-        self._rebuild_items()
-
-    def _rebuild_items(self) -> None:
-        current_id = self.currentItem().data(ROLE_TASK_ID) if self.currentItem() else None
-        snapshot = [
-            (self.item(i).data(ROLE_TASK_ID), self.item(i).data(ROLE_CARD))
-            for i in range(self.count())
-        ]
-        self.clear()
-        for task_id, card in snapshot:
-            item = QListWidgetItem()
-            item.setData(ROLE_TASK_ID, task_id)
-            item.setData(ROLE_CARD, card)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
-            self.addItem(item)
-            if task_id == current_id:
-                self.setCurrentItem(item)
+        # 다시 계산해 주지 않습니다(항목 크기를 한 번 계산하면 그대로 캐시해 둡니다). 예전에는
+        # 이걸 항목을 전부 지웠다가 똑같은 내용으로 다시 만드는 식으로 억지로 해결했는데, 그
+        # "지우기+다시 만들기" 자체가 또 resizeEvent를 유발할 수 있어서(예: TBD 칸을 펼치며
+        # 창 크기가 한꺼번에 바뀔 때) 자기 자신을 재귀로 다시 부르다 스택 오버플로로 죽거나,
+        # 그 재귀 도중 목록이 서로 뒤섞여 카드가 다 사라지는 등 계속 문제가 됐습니다.
+        # 항목을 파괴하지 않고 Qt가 캐시해 둔 크기만 다시 계산하게 하는
+        # scheduleDelayedItemsLayout()이 바로 이런 경우를 위한 안전한 방법이라 이걸로 바꿨습니다.
+        width = self.viewport().width()
+        if width != getattr(self, "_last_layout_width", None):
+            self._last_layout_width = width
+            self.scheduleDelayedItemsLayout()
 
     def _hit(self, pos):
         index = self.indexAt(pos)
@@ -597,6 +596,69 @@ class ColumnList(QListWidget):
         if card.get("indent"):
             rect = rect.adjusted(INDENT_STEP, 0, 0, 0)
         return item, card, rect
+
+    def _line_at(self, item: QListWidgetItem, card: dict, row: int, edge: str) -> dict:
+        """카드의 위/아래 경계에 놓일 때 줄 표시를 만듭니다. 그 자리에 실제로 놓이면
+        어느 부모 밑에 들어갈지(parent_id)까지 여기서 함께 정해서, 줄 길이(들여쓰기
+        여부)와 실제 놓이는 자리가 항상 같은 계산 결과를 쓰게 합니다."""
+        target_id = item.data(ROLE_TASK_ID)
+        if edge == "top":
+            parent_id = card.get("parent_id")
+        else:
+            # 하위 업무를 접지 않은 프로젝트 카드 바로 아래(=첫 하위 업무 자리)에 놓으면
+            # 그 프로젝트의 새 첫 하위 업무로, 그 외에는 이 카드와 같은 무리(형제)로 둡니다.
+            if not card.get("indent") and card.get("has_children") and not card.get("collapsed"):
+                parent_id = target_id
+            else:
+                parent_id = card.get("parent_id")
+        rect = self.visualItemRect(item)
+        y = rect.top() if edge == "top" else rect.bottom()
+        row = row if edge == "top" else row + 1
+        return {"kind": "line", "y": y, "row": row, "indent": 1 if parent_id else 0, "parent_id": parent_id}
+
+    def _compute_drop_plan(self, pos: QPoint, dragged_task_id: str, dragged_has_children: bool) -> dict:
+        """어디에 놓일지(줄로 순서만 바뀔지, 네모칸으로 하위에 들어갈지)를 한 곳에서만
+        계산합니다. dragMoveEvent가 그리는 안내 표시와 dropEvent가 실제로 하는 일이
+        반드시 이 함수 하나의 결과를 그대로 쓰게 해서, 화면에 보이는 것과 실제 동작이
+        어긋나는 일이 없게 합니다."""
+        if self.count() == 0:
+            return {"kind": "line", "y": 3, "row": 0, "indent": 0, "parent_id": None}
+
+        first_item = self.item(0)
+        last_item = self.item(self.count() - 1)
+        first_rect = self.visualItemRect(first_item)
+        last_rect = self.visualItemRect(last_item)
+        if pos.y() <= first_rect.top():
+            return self._line_at(first_item, first_item.data(ROLE_CARD) or {}, 0, "top")
+        if pos.y() >= last_rect.bottom():
+            # 목록 전체의 맨 끝은 항상 최상위로 둡니다 — 마지막 카드가 어떤 프로젝트의
+            # 하위 업무라 해도, 여기(더 아래로 내려갈 데가 없는 진짜 끝)는 그 프로젝트
+            # 묶음을 벗어나는 자리이기 때문입니다.
+            return {"kind": "line", "y": last_rect.bottom() - 1, "row": self.count(), "indent": 0, "parent_id": None}
+
+        hit = self._hit(pos)
+        if hit is None:
+            return {"kind": "line", "y": last_rect.bottom() - 1, "row": self.count(), "indent": 0, "parent_id": None}
+        item, card, rect = hit
+        row = self.row(item)
+        target_id = item.data(ROLE_TASK_ID)
+
+        # 하위로 넣기가 애초에 불가능한 경우(자기 자신, 이미 하위 업무인 카드, 이미
+        # 하위 업무를 가진 카드를 끌고 있는 경우)는 네모칸 구역을 아예 두지 않고 그
+        # 카드 전체를 순서 변경 구역으로 취급합니다 — 화면엔 네모칸이 보이는데 실제로는
+        # 안 들어가는 상황을 막기 위해서입니다.
+        can_nest = target_id != dragged_task_id and not card.get("indent") and not dragged_has_children
+        if can_nest:
+            band = rect.height() * 0.25
+            if pos.y() < rect.top() + band:
+                return self._line_at(item, card, row, "top")
+            if pos.y() > rect.bottom() - band:
+                return self._line_at(item, card, row, "bottom")
+            return {"kind": "box", "rect": rect, "item": item}
+
+        if pos.y() < rect.top() + rect.height() / 2:
+            return self._line_at(item, card, row, "top")
+        return self._line_at(item, card, row, "bottom")
 
     def _item_at_checkbox(self, pos) -> QListWidgetItem | None:
         hit = self._hit(pos)
@@ -663,6 +725,13 @@ class ColumnList(QListWidget):
         drag.setPixmap(pixmap)
         drag.setHotSpot(QPoint(16, rect.height() // 2))
         drag.exec(supportedActions, Qt.DropAction.MoveAction)
+        # dropEvent 안에서 곧바로 카드 목록을 다시 그리면(위젯을 지웠다 새로 만들면), Qt가
+        # 아직 이 드래그 자체를 내부적으로 정리하는 중이라 충돌해서 죽거나(스택 오버플로) 화면이
+        # 깨질 수 있었습니다. drag.exec()가 완전히 끝나 드래그 전체가 마무리된 이 시점에야
+        # 안전하게 다시 그립니다.
+        window = self.window()
+        if isinstance(window, MainWindow):
+            window.render()
 
     def keyPressEvent(self, event) -> None:
         if event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
@@ -675,35 +744,89 @@ class ColumnList(QListWidget):
 
     def dragEnterEvent(self, event) -> None:
         if isinstance(event.source(), ColumnList):
-            super().dragEnterEvent(event)
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event) -> None:
-        if isinstance(event.source(), ColumnList):
-            # 부모 클래스를 불러야 Qt가 드롭 위치 표시선(카테고리 목록 드래그할 때 보이는 것과
-            # 같은 줄)을 계산하고 그려 줍니다. 이걸 안 부르면 표시선이 전혀 안 보였습니다.
-            super().dragMoveEvent(event)
+        source = event.source()
+        if isinstance(source, ColumnList):
+            pos = event.position().toPoint()
+            dragged_items = source.selectedItems()
+            if dragged_items:
+                dragged_card = dragged_items[0].data(ROLE_CARD) or {}
+                self._drop_plan = self._compute_drop_plan(
+                    pos, dragged_items[0].data(ROLE_TASK_ID), bool(dragged_card.get("has_children"))
+                )
+            self.viewport().update()
             event.acceptProposedAction()
-            self._autoscroll_for_drag(event.position().toPoint())
+            self._autoscroll_for_drag(pos)
         else:
             event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:
+        self._drop_plan = None
+        self.viewport().update()
+        super().dragLeaveEvent(event)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        plan = self._drop_plan
+        if not plan:
+            return
+        painter = QPainter(self.viewport())
+        if plan["kind"] == "line":
+            # 안티에일리어싱을 켠 채로 그리면, 줄의 y 좌표가 정확히 정수 픽셀에 맞는지
+            # 아닌지에 따라 같은 두께로 그려도 어떤 자리는 진하고 어떤 자리는 흐리게/얇게
+            # 보이는 문제가 있었습니다(특히 맨 위 경계처럼 반올림이 애매한 위치). 줄은
+            # 안티에일리어싱 없이 정수 좌표에 딱 맞춰 그려서, 어디에 있든 항상 똑같은
+            # 두께·진하기로 보이게 합니다.
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            pen = QPen(QColor("#FFFFFF"), 1)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            # 목록 테두리가 둥글게 잘려 있어서(border-radius), 줄이 뷰포트 맨 위/아래 끝에
+            # 바짝 붙으면 양 끝이 그 둥근 모서리에 살짝 가려 다른 줄과 다르게 보일 수
+            # 있습니다. 맨 위/아래에서는 몇 px 안쪽으로 밀어서 항상 온전한 모양으로 그립니다.
+            y = round(max(3, min(plan["y"], self.viewport().height() - 3)))
+            # 최상위 카드 사이에 놓일 땐 카드 폭 그대로 긴 줄로, 하위 업무 카드 사이에
+            # 놓일 땐 하위 업무 카드처럼 들여써서 짧은 줄로 그려서 어디에 놓이는지
+            # (최상위인지 하위인지) 줄 길이만 보고도 바로 알 수 있게 합니다.
+            x0 = 4 + (INDENT_STEP if plan.get("indent") else 0)
+            painter.drawLine(x0, y, self.viewport().width() - 4, y)
+        else:
+            # 모서리가 둥글어야 하니 안티에일리어싱은 켜 두되(꺾이는 줄과 달리 둥근
+            # 테두리는 안티에일리어싱이 없으면 계단처럼 보입니다), 굵기는 줄과 똑같이
+            # 맞춰서 네모칸만 유독 두꺼워 보이지 않게 합니다.
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            pen = QPen(QColor("#FFFFFF"), 1)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(plan["rect"], 6, 6)
+        painter.end()
 
     def _autoscroll_for_drag(self, pos: QPoint) -> None:
         """카드가 화면에 다 안 보일 만큼 많을 때, 목록 위/아래 가장자리로 드래그하면
         스크롤이 되어야 맨 위/아래 카드까지 옮길 수 있습니다. Qt 기본 자동 스크롤이
-        이 커스텀 드래그 처리와 맞물려 잘 안 먹는 경우가 있어 직접 처리합니다."""
-        margin = 28
-        step = 14
+        이 커스텀 드래그 처리와 맞물려 잘 안 먹는 경우가 있어 직접 처리합니다. 가장자리에
+        가까울수록 더 빨리 스크롤되어서, 살짝 걸쳤을 땐 천천히·거의 끝까지 붙이면 빠르게
+        움직입니다."""
+        margin = 60
+        max_step = 22
         bar = self.verticalScrollBar()
-        if pos.y() < margin:
-            bar.setValue(bar.value() - step)
-        elif pos.y() > self.viewport().height() - margin:
-            bar.setValue(bar.value() + step)
+        top_gap = pos.y()
+        bottom_gap = self.viewport().height() - pos.y()
+        if top_gap < margin:
+            strength = 1 - max(top_gap, 0) / margin
+            bar.setValue(bar.value() - max(1, round(max_step * strength)))
+        elif bottom_gap < margin:
+            strength = 1 - max(bottom_gap, 0) / margin
+            bar.setValue(bar.value() + max(1, round(max_step * strength)))
 
     def dropEvent(self, event) -> None:
         source = event.source()
+        self._drop_plan = None
+        self.viewport().update()
         if not isinstance(source, ColumnList):
             event.ignore()
             return
@@ -713,45 +836,33 @@ class ColumnList(QListWidget):
             return
         item = items[0]
         task_id = item.data(ROLE_TASK_ID)
+        dragged_card = item.data(ROLE_CARD) or {}
         pos = event.position().toPoint()
-        target_index = self.indexAt(pos)
+        # 화면에 보이던 안내 표시(줄/네모칸)를 만든 것과 완전히 같은 계산으로 실제 동작을
+        # 정합니다 — 이러면 화면에 보이는 것과 실제로 벌어지는 일이 어긋날 수가 없습니다.
+        plan = self._compute_drop_plan(pos, task_id, bool(dragged_card.get("has_children")))
 
-        # 하위 업무로 넣을지(nest) 순서만 바꿀지(reorder)는 Qt 기본 OnItem/Above/Below
-        # 판정(카드 세로 길이의 위/아래 25%씩만 순서 변경으로 침) 대신, 카드의 정중앙
-        # 40%(위아래 30%씩 뺀 나머지) 안에 정확히 떨어뜨렸을 때만 하위로 넣습니다. 카드가
-        # 여러 줄이라 키가 크면 Qt 기본값으로는 살짝만 움직여도 하위로 들어가 버렸습니다.
-        hit = self._hit(pos)
-        if hit is not None:
-            target_item, _card, rect = hit
-            target_id = target_item.data(ROLE_TASK_ID)
-            band = rect.height() * 0.3
-            if target_id != task_id and rect.height() > 0 and rect.top() + band <= pos.y() <= rect.bottom() - band:
-                event.setDropAction(Qt.DropAction.MoveAction)
-                event.accept()
-                self.taskNestRequested.emit(task_id, target_id)
-                return
+        if plan["kind"] == "box":
+            target_id = plan["item"].data(ROLE_TASK_ID)
+            event.setDropAction(Qt.DropAction.MoveAction)
+            event.accept()
+            self.taskNestRequested.emit(task_id, target_id)
+            return
 
-        row = target_index.row()
-        if row < 0:
-            # 카드 위/아래 빈 공간에 놓으면 여기 걸립니다. 맨 위 카드보다도 위쪽에 놓았으면
-            # 맨 앞으로, 그 외(맨 아래 등)에는 맨 뒤로 보냅니다 — 안 그러면 맨 위로 옮기려는
-            # 드래그가 항상 맨 뒤로 가버렸습니다.
-            if self.count() > 0 and pos.y() < self.visualItemRect(self.item(0)).top():
-                row = 0
-            else:
-                row = self.count()
-        elif pos.y() > self.visualItemRect(self.itemFromIndex(target_index)).center().y():
-            row += 1
-
+        row = plan["row"]
         moved_across = source is not self
         if not moved_across:
             current_row = self.row(item)
             if row > current_row:
                 row -= 1
 
+        # 칸을 넘어 옮긴 경우(moved_across)는 예전부터 항상 최상위로 둡니다 — 다른 칸의
+        # 어떤 프로젝트 옆에 떨어뜨렸다고 그 프로젝트 하위로 들어가면 오히려 헷갈립니다.
+        parent_id = None if moved_across else plan.get("parent_id")
+
         event.setDropAction(Qt.DropAction.MoveAction)
         event.accept()
-        self.taskDropped.emit(task_id, self.column, row, moved_across)
+        self.taskDropped.emit(task_id, self.column, row, moved_across, parent_id)
 
 
 class TaskDialog(QDialog):
@@ -1760,20 +1871,46 @@ class MainWindow(QMainWindow):
         return result
 
     def render(self) -> None:
+        # 카드 목록을 지웠다 다시 채우는 도중 그게 또 render()를 부르는 경우(예: 위젯 크기가
+        # 바뀌며 연쇄로 이벤트가 겹칠 때)를 막습니다 — 안 막으면 안쪽 호출이 목록을 다시 비워
+        # 바깥쪽 호출이 채우던 내용과 뒤섞여 카드가 다 사라지고 화면만 새까맣게 남을 수 있습니다.
+        if getattr(self, "_rendering", False):
+            return
+        self._rendering = True
+        try:
+            self._render_impl()
+        finally:
+            self._rendering = False
+
+    def _render_impl(self) -> None:
         for column, listing in self.lists.items():
             selected_id = None
             current = listing.currentItem()
             if current:
                 selected_id = current.data(ROLE_TASK_ID)
+            # 업무가 많을 때 clear() 후 한꺼번에 다시 채우면, 개수(count)는 맞게 들어가는데도
+            # 화면(뷰포트)이 그대로 안 갱신되고 비어 보이는 경우가 있었습니다(완료 항목 보기로
+            # 갔다가 돌아오면 그제서야 다시 그려짐 — 즉 데이터가 아니라 그리기 문제). 다시 채우는
+            # 동안 그림을 잠갔다가 마지막에 풀면 Qt가 그 시점에 전체를 새로 그립니다.
+            listing.setUpdatesEnabled(False)
             listing.clear()
             if self.show_done:
                 tasks = self.done_tasks() if column == TODO else []
             else:
                 tasks = self.visible_tasks(column)
             for task in tasks:
+                # 업무 하나의 카드 정보를 만들다 예외가 나면(예: 손상된 날짜 값), 그
+                # 업무만 건너뛰고 나머지는 계속 그립니다 — 하나 때문에 칸 전체가
+                # 텅 비거나 앱이 죽어버리면 안 되므로. 무슨 업무에서 났는지는 크래시
+                # 로그에 남겨서 원인을 짚을 수 있게 합니다.
+                try:
+                    card = self._card(task, in_done_view=self.show_done)
+                except Exception:
+                    _log_exception(f"render() task={task.id}")
+                    continue
                 item = QListWidgetItem()
                 item.setData(ROLE_TASK_ID, task.id)
-                item.setData(ROLE_CARD, self._card(task, in_done_view=self.show_done))
+                item.setData(ROLE_CARD, card)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                 listing.addItem(item)
                 if task.id == selected_id:
@@ -1781,6 +1918,8 @@ class MainWindow(QMainWindow):
             pinned = sum(1 for t in tasks if t.pinned)
             label = str(len(tasks)) + (f" · 고정 {pinned}" if pinned else "")
             self.counters[column].setText(label)
+            listing.setUpdatesEnabled(True)
+            listing.viewport().update()
 
         # 업무 이력 창을 비모달로 열어 둔 채 TODO에서 업무를 추가/수정할 수 있게
         # 되면서, 그 창도 곧바로 최신 내용을 보여줘야 합니다.
@@ -1814,6 +1953,7 @@ class MainWindow(QMainWindow):
             "done": task.done,
             "urgency": task_urgency(task),
             "indent": 1 if task.parent_id else 0,
+            "parent_id": task.parent_id,
             # DONE 화면에서는 완료된 하위 업무만 그 아래 나오니, 화살표도 완료된 하위가 있을 때만 보여줍니다.
             "has_children": bool(self.done_child_tasks(task.id)) if in_done_view else bool(children),
             "collapsed": task.collapsed,
@@ -1843,28 +1983,7 @@ class MainWindow(QMainWindow):
             if sibling:
                 sibling.order = index
 
-    def _infer_drop_parent(self, column: str, task_id: str, row: int) -> str | None:
-        """같은 칸 안에서 순서만 바꿔 놓았을 때, 놓인 위치 바로 위 카드를 보고 새
-        parent_id를 정합니다 — 하위 업무 카드 바로 다음에 놓으면 그 부모의 하위로 남고,
-        최상위 카드 바로 다음(또는 맨 위)에 놓으면 다시 최상위로 돌아옵니다. 이게 없으면
-        한 번 하위로 들어간 업무는 같은 칸 안에서 순서만 바꿔도 계속 하위에 갇혀 있었습니다."""
-        flat = [t for t in self.visible_tasks(column) if t.id != task_id]
-        row = max(0, min(row, len(flat)))
-        # 맨 위, 또는 목록 전체의 맨 끝에 놓으면 항상 최상위로 취급합니다. 맨 끝의 경우를
-        # 따로 안 두면, 마지막 카드가 어떤 프로젝트의 하위 업무일 때 그 하위로 도로
-        # 붙잡혀 버려서(한 번 하위로 들어간 카드를 맨 아래로 다시 빼낼 방법이 없어짐).
-        if row == 0 or row == len(flat):
-            return None
-        anchor = flat[row - 1]
-        if anchor.parent_id is not None:
-            return anchor.parent_id
-        # anchor가 최상위 업무인 경우: 바로 다음 카드가 그 하위 업무라면(부모와 첫 하위
-        # 업무 사이에 끼워 넣는 상황) 최상위로 튀어나오지 않고 그 하위로 들어가게 합니다.
-        if flat[row].parent_id == anchor.id:
-            return anchor.id
-        return None
-
-    def on_task_dropped(self, task_id: str, column: str, row: int, moved_across: bool) -> None:
+    def on_task_dropped(self, task_id: str, column: str, row: int, moved_across: bool, parent_id: str | None) -> None:
         task = self.find(task_id)
         if task is None:
             return
@@ -1874,10 +1993,16 @@ class MainWindow(QMainWindow):
             task.pinned = True
             task.parent_id = None
         else:
-            task.parent_id = self._infer_drop_parent(column, task_id, row)
+            # 화면에 보여준 안내 표시(줄)를 계산할 때(ColumnList._compute_drop_plan) 함께
+            # 정해 둔 parent_id를 그대로 씁니다 — 여기서 다시 추론하면 화면에 보인 것과
+            # 실제로 놓이는 자리가 어긋날 수 있습니다.
+            task.parent_id = parent_id
         self.reorder(column, task_id, row)
         self.persist()
-        self.render()
+        # 여기서는 render()를 부르지 않습니다 — dropEvent가 아직 Qt 내부 드래그 처리
+        # 도중(콜스택 안)이라, 지금 카드 위젯을 지웠다 다시 만들면 Qt가 그 드래그를
+        # 정리하다 이미 없어진 위젯을 건드려 죽거나 화면이 깨질 수 있습니다. 드래그
+        # 전체가 끝난 뒤(ColumnList.startDrag의 drag.exec() 다음)에 다시 그립니다.
 
     def on_task_nest_requested(self, task_id: str, target_id: str) -> None:
         if task_id == target_id:
@@ -1898,7 +2023,8 @@ class MainWindow(QMainWindow):
         task.order = len(siblings)
         target.collapsed = False
         self.persist()
-        self.render()
+        # on_task_dropped와 같은 이유로 여기서 render()를 부르지 않습니다 — 드래그
+        # 전체가 끝난 뒤(ColumnList.startDrag)에 다시 그립니다.
 
     def on_task_collapse_toggled(self, task_id: str) -> None:
         task = self.find(task_id)
@@ -2289,22 +2415,27 @@ def _icon_path() -> str:
     return os.path.join(base, "app", "assets", "icon.png")
 
 
+def _log_exception(context: str, exc_type=None, exc_value=None, exc_tb=None) -> None:
+    """예상 못 한 예외를 %APPDATA%\\TodoTBD\\crash.log 에 남깁니다. 잡히지 않아 앱이
+    통째로 죽는 경우(sys.excepthook)뿐 아니라, render()처럼 우리가 직접 감싸서
+    막는 경우에도 이 함수로 남겨야 원인을 나중에 짚을 수 있습니다."""
+    if exc_type is None:
+        exc_type, exc_value, exc_tb = sys.exc_info()
+    log_path = storage.data_dir() / "crash.log"
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n=== {datetime.now().isoformat(timespec='seconds')} {context} ===\n")
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+    except OSError:
+        pass
+    traceback.print_exception(exc_type, exc_value, exc_tb, file=sys.stderr)
+
+
 def _install_crash_logger() -> None:
     """예상 못 한 예외로 창이 갑자기 꺼졌을 때, 원인을 알 방법이 없으면 고칠 수가
     없습니다. 잡히지 않은 예외를 %APPDATA%\\TodoTBD\\crash.log 에 남겨서, 다음에
     같은 문제가 또 생기면 그 로그로 정확한 원인을 짚을 수 있게 합니다."""
-    log_path = storage.data_dir() / "crash.log"
-
-    def _handle(exc_type, exc_value, exc_tb) -> None:
-        try:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"\n=== {datetime.now().isoformat(timespec='seconds')} ===\n")
-                traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
-        except OSError:
-            pass
-        traceback.print_exception(exc_type, exc_value, exc_tb, file=sys.stderr)
-
-    sys.excepthook = _handle
+    sys.excepthook = lambda *exc_info: _log_exception("unhandled", *exc_info)
 
 
 def run() -> int:
